@@ -11,8 +11,13 @@ exclude = [
     "gym_microrts/microrts/lib/*.jar",
 ]
 
+[[tool.poetry.source]]
+name = "torch_cuda128"
+url = "https://download.pytorch.org/whl/cu128"
+priority = "explicit"
+
 [tool.poetry.dependencies]
-python = ">=3.7.1,<3.10"
+python = ">=3.9.0,<3.10"
 gym = "0.23.1"
 JPype1 = "^1.3.0"
 peewee = "^3.14.8"
@@ -25,9 +30,10 @@ tensorboard = "^2.5.0"
 wandb = "^0.12.1"
 trueskill = "^0.4.5"
 stable-baselines3 = "^1.1.0"
-torch = "1.7.1"
+torch = {version = "2.7.0", source="torch_cuda128"}
 pytest = "^6.2.5"
 pre-commit = "^2.17.0"
+jupyter-client = "^7.0.0"
 
 [tool.poetry-dynamic-versioning]
 enable = true
