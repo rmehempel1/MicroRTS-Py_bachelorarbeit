@@ -871,7 +871,8 @@ if __name__ == "__main__":
 
             mean_reward = np.mean(total_rewards[-100:])
             print(
-                f"Episode {episode_idx}, Frame {frame_idx}: Reward={reward:.2f}, Mean(100)={mean_reward:.2f}, Epsilon={epsilon:.2f}")
+                f"Episode {episode_idx}, Frame {frame_idx}: Reward={reward.item():.2f}, Mean(100)={mean_reward.item():.2f}, Epsilon={epsilon.item():.2f}"
+            )
 
             if best_mean_reward is None or best_mean_reward < mean_reward:
                 print(f"Neues bestes Ergebnis: {best_mean_reward} → {mean_reward:.2f}")
