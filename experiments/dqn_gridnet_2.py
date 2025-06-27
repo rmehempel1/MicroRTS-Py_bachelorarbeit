@@ -35,16 +35,6 @@ def parse_args():
         help='the id of the gym environment')
     parser.add_argument('--learning-rate', type=float, default=2.5e-4,
         help='the learning rate of the optimizer')
-    #ergänzt
-    parser.add_argument('--epsilon-start', type=float, default=1.0,
-        help='Startwert für epsilon im epsilon-greedy Ansatz')
-    parser.add_argument('--epsilon-final', type=float, default=0.02,
-        help='Minimaler epsilon-Wert')
-    parser.add_argument('--epsilon-decay', type=int, default=100000,
-        help='Anzahl der Frames für linearen Epsilon-Zerfall')
-    parser.add_argument('--sync-interval', type=int, default=1000,
-                        help='Intervall in Frames zum Synchronisieren der Target-Netzwerke')
-    #bis hier
     parser.add_argument('--seed', type=int, default=1,
         help='seed of the experiment')
     parser.add_argument('--total-timesteps', type=int, default=50000000,
@@ -63,6 +53,16 @@ def parse_args():
         help="the entity (team) of wandb's project")
 
     # Algorithm specific arguments
+    # ergänzt
+    parser.add_argument('--epsilon-start', type=float, default=1.0,
+                        help='Startwert für epsilon im epsilon-greedy Ansatz')
+    parser.add_argument('--epsilon-final', type=float, default=0.02,
+                        help='Minimaler epsilon-Wert')
+    parser.add_argument('--epsilon-decay', type=int, default=100000,
+                        help='Anzahl der Frames für linearen Epsilon-Zerfall')
+    parser.add_argument('--sync-interval', type=int, default=1000,
+                        help='Intervall in Frames zum Synchronisieren der Target-Netzwerke')
+    # bis hier
     parser.add_argument('--partial-obs', type=lambda x: bool(strtobool(x)), default=False, nargs='?', const=True,
         help='if toggled, the game will have partial observability')
     parser.add_argument('--n-minibatch', type=int, default=4,
@@ -722,8 +722,7 @@ move_dec.shape:     ([1, 2, 8, 8])  c=[0,1]
 """
 if __name__ == "__main__":
 
-
-
+    print(">>> Argumentparser wird initialisiert")
     args = parse_args()
 
     print(f"Save frequency: {args.save_frequency}")
@@ -763,7 +762,10 @@ if __name__ == "__main__":
         partial_obs=args.partial_obs,
         max_steps=2000,
         render_theme=2,
-        ai2s=[microrts_ai.workerRushAI for _ in range(args.num_bot_envs)],
+        ai2s=[microrts_ai.coacAI for _ in range(args.num_bot_envs - 6)]
+             + [microrts_ai.randomBiasedAI for _ in range(min(args.num_bot_envs, 2))]
+             + [microrts_ai.lightRushAI for _ in range(min(args.num_bot_envs, 2))]
+             + [microrts_ai.workerRushAI for _ in range(min(args.num_bot_envs, 2))],
         map_paths=[args.train_maps[0]],
         reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0]),
         cycle_maps=args.train_maps,
@@ -781,7 +783,6 @@ if __name__ == "__main__":
         from concurrent.futures import ThreadPoolExecutor
 
         eval_executor = ThreadPoolExecutor(max_workers=args.max_eval_workers, thread_name_prefix="league-eval-")
-
     """
     
 
@@ -854,7 +855,7 @@ if __name__ == "__main__":
     start_time = time.time()
 
     reward_queue = deque(maxlen=100)  # Vor der Schleife
-
+    print("Starte Training")
     while frame_idx < args.total_timesteps:
         frame_idx += 1
         epsilon = max(args.epsilon_final, args.epsilon_start - frame_idx / args.epsilon_decay)
