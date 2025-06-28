@@ -921,11 +921,11 @@ if __name__ == "__main__":
         optimizer.step()
 
         # Logging
-        if frame_idx % 2000 ==0:
+        if frame_idx % 1000 ==0:
             print("frame index:", frame_idx)
             print("Loss:", loss)
 
-        if frame_idx % 500_000 == 0:
+        if frame_idx % 5000 == 0:
             for name, head in agent.heads.items():
                 torch.save(head.state_dict(), f"checkpoints/{args.exp_name}_{name}_{frame_idx}.pth")
 
