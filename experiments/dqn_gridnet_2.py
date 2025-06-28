@@ -8,7 +8,6 @@ from distutils.util import strtobool
 from typing import List
 from collections import deque
 
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -160,6 +159,31 @@ class MicroRTSStatsRecorder(VecEnvWrapper):
                 self.ts[i] = 0
                 newinfos[i] = info
         return obs, rews, dones, newinfos
+
+def to_scalar(x):
+    """Konvertiert NumPy-Array, Tensor oder float/int zu float."""
+    try:
+        if hasattr(x, 'mean'):
+            return float(x.mean())
+        return float(x)
+    except Exception as e:
+        print(f"[WARN] to_scalar failed for {x}: {e}")
+        return 0.0
+
+def log_training_status(episode_idx, frame_idx, reward, mean_reward, epsilon, start_time):
+    reward_val = to_scalar(reward)
+    mean_val = to_scalar(mean_reward)
+    eps_val = to_scalar(epsilon)
+    sps = frame_idx / (time.time() - start_time + 1e-8)  # Schutz gegen Division durch 0
+
+    print(
+        f"[Episode {episode_idx:4d}] "
+        f"Frame {frame_idx:7d} | "
+        f"Reward: {reward_val:.2f} | "
+        f"Mean(100): {mean_val:.2f} | "
+        f"Epsilon: {eps_val:.2f} | "
+        f"SPS: {sps:.2f}"
+    )
 
 def get_headwise_action_mask(env, actions_shape, head_config):
     """
@@ -853,15 +877,19 @@ if __name__ == "__main__":
     best_mean_reward = None
     epsilon = args.epsilon_start
     start_time = time.time()
+    log_interval=260
 
     reward_queue = deque(maxlen=100)  # Vor der Schleife
     print("Starte Training")
+    start_time = time.time()
     while frame_idx < args.total_timesteps:
         frame_idx += 1
         epsilon = max(args.epsilon_final, args.epsilon_start - frame_idx / args.epsilon_decay)
 
         reward = agent.play_step(epsilon=epsilon, device=device)
         #envs.venv.venv.render(mode="human")
+        if frame_idx % log_interval == 0:
+            log_training_status(episode_idx, frame_idx, reward, mean_reward, epsilon, start_time)
 
 
         if reward is not None:
@@ -871,7 +899,7 @@ if __name__ == "__main__":
 
             mean_reward = np.mean(total_rewards[-100:])
             print(f"Episode {episode_idx}, Frame {frame_idx}: "
-                  f"Reward={reward.mean():.2f}, Mean(100)={mean_reward.mean():.2f}, Epsilon={epsilon.mean():.2f}")
+                  f"Mean(100)={mean_reward.mean():.2f}, Epsilon={epsilon.mean():.2f}")
 
             if best_mean_reward is None or best_mean_reward < mean_reward:
                 print(f"Neues bestes Ergebnis: {best_mean_reward} → {mean_reward:.2f}")
