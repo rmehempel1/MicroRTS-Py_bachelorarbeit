@@ -925,7 +925,7 @@ if __name__ == "__main__":
             print("frame index:", frame_idx)
             print("Loss:", loss)
 
-        if frame_idx % 5000 == 0:
+        if frame_idx % 10000 == 0:
             for name, head in agent.heads.items():
                 torch.save(head.state_dict(), f"checkpoints/{args.exp_name}_{name}_{frame_idx}.pth")
 
