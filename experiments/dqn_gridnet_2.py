@@ -877,7 +877,8 @@ if __name__ == "__main__":
     best_mean_reward = None
     epsilon = args.epsilon_start
     start_time = time.time()
-    log_interval=260
+    log_interval=1000
+    mean_reward = 0.0  # vor der Trainingsschleife definieren
 
     reward_queue = deque(maxlen=100)  # Vor der Schleife
     print("Starte Training")
