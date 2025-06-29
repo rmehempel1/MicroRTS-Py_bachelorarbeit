@@ -857,6 +857,9 @@ if __name__ == "__main__":
 
     expbuffer = ExperienceBuffer(capacity=10000)
     agent = Agent(envs, expbuffer, device=device)
+    total_params = sum(p.numel() for head in agent.heads.values() for p in head.parameters() if p.requires_grad)
+    print(f"Gesamtanzahl der trainierbaren Parameter: {total_params}")
+
     target_heads = {name: head for name, head in agent.heads.items()}
 
     optimizer = optim.Adam(
