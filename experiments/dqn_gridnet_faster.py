@@ -529,6 +529,89 @@ class Agent:
         self.total_reward = 0.0
 
     @torch.no_grad()
+    def play_eval(self, device="cpu"):
+        state_v = torch.tensor(self.state, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
+
+        """Jeder Kopf muss alle seine maximal Möglichen Aktionen machen, diese einzeln. Die beste Aktion an Merge 
+        schicken, welcher die Gesamtaktion ausführt
+        """
+        # Berechne strukturierte Aktionsmasken
+        masks = self._get_structured_action_masks(self.state, device=self.device)
+
+        # Attack
+        attack_decision, attack_dir = self.attack_head(state_v)
+        attack_mask = attack_decision.argmax(dim=1).cpu().numpy()
+        attack_dir = attack_dir.masked_fill(masks["attack_dir"] == 0, -1e8)
+        attack_param = attack_dir.argmax(dim=1).cpu().numpy()
+
+        # Move
+        move_decision, move_dir = self.movement_head(state_v)
+        move_mask = move_decision.argmax(dim=1).cpu().numpy()
+        move_dir = move_dir.masked_fill(masks["move_dir"] == 0, -1e8)
+        move_param = move_dir.argmax(dim=1).cpu().numpy()
+
+        # Harvest
+        harvest_decision, harvest_dir = self.harvest_head(state_v)
+        harvest_mask = harvest_decision.argmax(dim=1).cpu().numpy()
+        harvest_dir = harvest_dir.masked_fill(masks["harvest_dir"] == 0, -1e8)
+        harvest_param = harvest_dir.argmax(dim=1).cpu().numpy()
+
+        # Return
+        return_decision, return_dir = self.return_head(state_v)
+        return_mask = return_decision.argmax(dim=1).cpu().numpy()
+        return_dir = return_dir.masked_fill(masks["return_dir"] == 0, -1e8)
+        return_param = return_dir.argmax(dim=1).cpu().numpy()
+
+        # Produce
+        production_decision, production_dir, production_type = self.production_head(state_v)
+        produce_mask = production_decision.argmax(dim=1).cpu().numpy()
+        production_dir = production_dir.masked_fill(masks["produce_dir"] == 0, -1e8)
+        production_type = production_type.masked_fill(masks["produce_type"] == 0, -1e8)
+        produce_param = production_dir.argmax(dim=1).cpu().numpy()
+        produce_type = production_type.argmax(dim=1).cpu().numpy()
+
+        # Führe Teilaktion zur Gesamtaktion zusammen
+        action_type_grid = get_action_type_grid(attack_mask, harvest_mask, return_mask, produce_mask, move_mask)
+        action_taken_grid = action_type_grid
+        """
+
+        print("attack_mask.shape:", attack_mask.shape)
+        print("move_mask.shape:", move_mask.shape)
+        print("state_v.shape:", state_v.shape)
+        """
+
+        action = merge_actions(action_type_grid, attack_param, harvest_param, return_param, produce_type,
+                               produce_param, move_param)
+        # print("doppelcheck", action.shape)
+
+        # Führe Aktion aus
+
+        torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
+        print(action[1])
+        new_state, reward, is_done, _ = self.env.step(action)
+        self.total_reward += reward
+
+        # print("action.shape before storing:", action.shape)
+
+        """
+                for env_i in range(self.env.num_envs):
+            self.exp_buffer.append((
+                self.state[env_i],
+                action[env_i],  # → shape: (448,)
+                action_taken_grid[env_i],
+                reward[env_i],
+                is_done[env_i],
+                new_state[env_i]
+            ))
+        """
+
+        self.state = new_state
+        if np.any(is_done):
+            done_reward = self.total_reward
+            self._reset()
+            return done_reward
+        return None
+
     def play_step(self, epsilon=0.0, device="cpu"):
         """
                 for idx in range(64):
@@ -781,10 +864,7 @@ if __name__ == "__main__":
         partial_obs=args.partial_obs,
         max_steps=2000,
         render_theme=2,
-        ai2s=[microrts_ai.coacAI for _ in range(args.num_bot_envs - 6)]
-             + [microrts_ai.randomBiasedAI for _ in range(min(args.num_bot_envs, 2))]
-             + [microrts_ai.lightRushAI for _ in range(min(args.num_bot_envs, 2))]
-             + [microrts_ai.workerRushAI for _ in range(min(args.num_bot_envs, 2))],
+        ai2s=[microrts_ai.passiveAI for _ in range(args.num_bot_envs)],
         map_paths=[args.train_maps[0]],
         reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0]),
         cycle_maps=args.train_maps,
