@@ -753,7 +753,11 @@ class Agent:
         # Reward-Shaping: Bestrafe noop-Aktionen
         reward = torch.tensor(reward, dtype=torch.float32)
         action_taken_grid_tensor = torch.tensor(action_taken_grid, dtype=torch.long)
-        reward[action_taken_grid_tensor == 0] = -0.01
+
+        noop_counts = (action_taken_grid_tensor == 0).sum(dim=(1, 2))  # Anzahl Noops pro Env
+        noop_penalty = 0.01
+        penalty = noop_counts * noop_penalty  # shape: (num_envs,)
+        reward -= penalty
         reward = reward.numpy()  # zurück zu NumPy, da es so gespeichert wird
 
         for env_i in range(self.env.num_envs):
