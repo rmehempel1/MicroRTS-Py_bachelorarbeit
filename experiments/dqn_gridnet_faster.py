@@ -40,7 +40,7 @@ def parse_args():
     parser.add_argument('--cuda', type=lambda x: bool(strtobool(x)), default=True, nargs='?', const=True,
                         help='if toggled, cuda will not be enabled by default')
     parser.add_argument('--prod-mode', type=lambda x: bool(strtobool(x)), default=False, nargs='?', const=True,
-                        help='run the script in production mode and use wandb to log outputs')
+                        help='run the script in produce mode and use wandb to log outputs')
     parser.add_argument('--capture-video', type=lambda x: bool(strtobool(x)), default=False, nargs='?', const=True,
                         help='whether to capture videos of the agent performances (check out `videos` folder)')
     parser.add_argument('--wandb-project-name', type=str, default="gym-microrts",
@@ -395,7 +395,7 @@ def merge_actions(
         harvest_mask=None,  # (H, W) – bool
         return_mask=None,  # (H, W) – bool
         produce_params=None,  # (H, W, 1)
-        production_type=None,
+        produce_type=None,
         move_params=None  # (H, W, 1)
 ):
     """
@@ -429,9 +429,9 @@ def merge_actions(
                     full_action[i, j, k, 3] = return_mask[i, j, k]
                     # print("retuern")
 
-                elif a_type == 4 and produce_params is not None and production_type is not None:
+                elif a_type == 4 and produce_params is not None and produce_type is not None:
                     full_action[i, j, k, 4] = produce_params[i, j, k]
-                    # full_action[i, j, k, 5] = production_type[i, j, k]
+                    # full_action[i, j, k, 5] = produce_type[i, j, k]
                     print("Produce")
 
                 elif a_type == 1 and move_params is not None:
@@ -488,7 +488,7 @@ class Agent:
         self.movement_head = MovementHead(in_channels=29).to(self.device)
         self.harvest_head = MovementHead(in_channels=29).to(self.device)
         self.return_head = MovementHead(in_channels=29).to(self.device)
-        self.production_head = ProduceHead(in_channels=29).to(self.device)
+        self.produce_head = ProduceHead(in_channels=29).to(self.device)
         self.attack_head = AttackHead(in_channels=29).to(self.device)
 
         self.heads = {
@@ -496,7 +496,7 @@ class Agent:
             "harvest": self.harvest_head,
             "return": self.return_head,
             "move": self.movement_head,
-            "produce": self.production_head,
+            "produce": self.produce_head,
         }
 
         self.head_config = {
@@ -504,7 +504,7 @@ class Agent:
             "harvest": {"type_id": 2, "indices": (0, 2), "classes": (2, 4)},  # type_id: Acion cpmponentn action type id
             "return": {"type_id": 3, "indices": (0, 3), "classes": (2, 4)},  # indices: Relevanten Action components
             "produce": {"type_id": 4, "indices": (0, 4, 5), "classes": (2, 4, 7)},
-            # classes: Decider, Direction, Production_type
+            # classes: Decider, Direction, produce_type
             "move": {"type_id": 1, "indices": (0, 1), "classes": (2, 4)}  # classes: Decider, Direction
         }
 
@@ -568,12 +568,12 @@ class Agent:
         return_param = return_dir.argmax(dim=1).cpu().numpy()
 
         # Produce
-        production_decision, production_dir, production_type = self.production_head(state_v)
-        produce_mask = production_decision.argmax(dim=1).cpu().numpy()
-        production_dir = production_dir.masked_fill(masks["produce_dir"] == 0, -1e8)
-        production_type = production_type.masked_fill(masks["produce_type"] == 0, -1e8)
-        produce_param = production_dir.argmax(dim=1).cpu().numpy()
-        produce_type = production_type.argmax(dim=1).cpu().numpy()
+        produce_decision, produce_dir, produce_type = self.produce_head(state_v)
+        produce_mask = produce_decision.argmax(dim=1).cpu().numpy()
+        produce_dir = produce_dir.masked_fill(masks["produce_dir"] == 0, -1e8)
+        produce_type = produce_type.masked_fill(masks["produce_type"] == 0, -1e8)
+        produce_param = produce_dir.argmax(dim=1).cpu().numpy()
+        produce_type = produce_type.argmax(dim=1).cpu().numpy()
 
         # Führe Teilaktion zur Gesamtaktion zusammen
         action_type_grid = get_action_type_grid(
@@ -599,7 +599,7 @@ class Agent:
         # Führe Aktion aus
 
         torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
-        print(action[1])
+
         new_state, reward, is_done, _ = self.env.step(action)
         self.total_reward += reward
 
@@ -716,12 +716,12 @@ class Agent:
             return_param = return_dir.argmax(dim=1).cpu().numpy()
 
             # Produce
-            production_decision, production_dir, production_type = self.production_head(state_v)
-            produce_mask = production_decision.argmax(dim=1).cpu().numpy()
-            production_dir = production_dir.masked_fill(masks["produce_dir"] == 0, -1e8)
-            production_type = production_type.masked_fill(masks["produce_type"] == 0, -1e8)
-            produce_param = production_dir.argmax(dim=1).cpu().numpy()
-            produce_type = production_type.argmax(dim=1).cpu().numpy()
+            produce_decision, produce_dir, produce_type = self.produce_head(state_v)
+            produce_mask = produce_decision.argmax(dim=1).cpu().numpy()
+            produce_dir = produce_dir.masked_fill(masks["produce_dir"] == 0, -1e8)
+            produce_type = produce_type.masked_fill(masks["produce_type"] == 0, -1e8)
+            produce_param = produce_dir.argmax(dim=1).cpu().numpy()
+            produce_type = produce_type.argmax(dim=1).cpu().numpy()
 
             # Führe Teilaktion zur Gesamtaktion zusammen
             action_type_grid = get_action_type_grid(
@@ -750,6 +750,11 @@ class Agent:
         self.total_reward += reward
 
         # print("action.shape before storing:", action.shape)
+        # Reward-Shaping: Bestrafe noop-Aktionen
+        reward = torch.tensor(reward, dtype=torch.float32)
+        action_taken_grid_tensor = torch.tensor(action_taken_grid, dtype=torch.long)
+        reward[action_taken_grid_tensor == 0] = -0.01
+        reward = reward.numpy()  # zurück zu NumPy, da es so gespeichert wird
 
         for env_i in range(self.env.num_envs):
             self.exp_buffer.append((
