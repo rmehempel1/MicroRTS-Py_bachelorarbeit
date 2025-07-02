@@ -441,35 +441,39 @@ def merge_actions(
     return full_action.reshape(E, H * W * 7)
 
 
-def get_action_type_grid(attack_decision,
-                         harvest_decision,
-                         return_decision,
-                         produce_decision,
-                         move_decision):
-    # print("Attack_decision_shape:", attack_decision.shape) #Attack_decision_shape: (24, 8, 8)
+def get_action_type_grid(action_type_mask,
+                                    attack_decision,
+                                    harvest_decision,
+                                    return_decision,
+                                    produce_decision,
+                                    move_decision):
+    """
+    Priorisierte Auswahl der Action Types basierend auf gültigen Masken
+    1: move, 2: harvest, 3: return, 4: produce, 5: attack
+    Default ist 0 (no-op)
+    """
     E, H, W = attack_decision.shape
-    # print(E, H,W)
-    # print(attack_decision.shape)
+    action_type_grid = np.zeros((E, H, W), dtype=np.int32)  # 0 = no-op
 
-    action_type_grid = np.full((E, H, W), 6, dtype=np.int32)
     for i in range(E):
         for j in range(H):
             for k in range(W):
-                """Regelt Priorisierung der Decider
-                Attack>Harvest>return>Produce>move"""
-                if attack_decision[i, j, k] == 1:
+                # action_type_mask: [E, 6, H, W] → [E, H, W, 6]
+                valid_types = action_type_mask[i, :, j, k].cpu().numpy()
+                if valid_types[5] and attack_decision[i, j, k] == 1:
                     action_type_grid[i, j, k] = 5
-                elif harvest_decision[i, j, k] == 1:
+                elif valid_types[2] and harvest_decision[i, j, k] == 1:
                     action_type_grid[i, j, k] = 2
-                elif return_decision[i, j, k] == 1:
+                elif valid_types[3] and return_decision[i, j, k] == 1:
                     action_type_grid[i, j, k] = 3
-                elif produce_decision[i, j, k] == 1:
+                elif valid_types[4] and produce_decision[i, j, k] == 1:
                     action_type_grid[i, j, k] = 4
-                elif move_decision[i, j, k] == 1:
+                elif valid_types[1] and move_decision[i, j, k] == 1:
                     action_type_grid[i, j, k] = 1
+                elif valid_types[0]:
+                    action_type_grid[i, j, k] = 0  # fallback to no-op if nothing else möglich
 
     return action_type_grid
-
 
 class Agent:
     def __init__(self, env, exp_buffer, device="cpu"):
@@ -513,6 +517,7 @@ class Agent:
             return torch.tensor(mask, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
 
         return {
+            "action_type": reshape_and_convert(raw_masks[:, :, 0:6], 6),
             "move_dir": reshape_and_convert(raw_masks[:, :, 6:10], 4),
             "harvest_dir": reshape_and_convert(raw_masks[:, :, 10:14], 4),
             "return_dir": reshape_and_convert(raw_masks[:, :, 14:18], 4),
@@ -571,8 +576,15 @@ class Agent:
         produce_type = production_type.argmax(dim=1).cpu().numpy()
 
         # Führe Teilaktion zur Gesamtaktion zusammen
-        action_type_grid = get_action_type_grid(attack_mask, harvest_mask, return_mask, produce_mask, move_mask)
-        action_taken_grid = action_type_grid
+        action_type_grid = get_action_type_grid(
+            masks["action_type"],  # das ist die action_type_mask
+            attack_mask,
+            harvest_mask,
+            return_mask,
+            produce_mask,
+            move_mask
+        )
+
         """
 
         print("attack_mask.shape:", attack_mask.shape)
@@ -712,7 +724,14 @@ class Agent:
             produce_type = production_type.argmax(dim=1).cpu().numpy()
 
             # Führe Teilaktion zur Gesamtaktion zusammen
-            action_type_grid = get_action_type_grid(attack_mask, harvest_mask, return_mask, produce_mask, move_mask)
+            action_type_grid = get_action_type_grid(
+                masks["action_type"],  # das ist die action_type_mask
+                attack_mask,
+                harvest_mask,
+                return_mask,
+                produce_mask,
+                move_mask
+            )
             action_taken_grid=action_type_grid
             """
 
