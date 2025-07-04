@@ -839,14 +839,14 @@ class Agent:
     def calc_loss(self, batch, target_heads, gamma=0.99):
         states, actions, rewards, next_states, dones, action_taken_grid = batch
 
-
-        # Tensor-Konvertierung
-        states = torch.tensor(states, dtype=torch.float32, device=self.device)
+        states = torch.tensor(states, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
+        next_states = torch.tensor(next_states, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
+        rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device).view(-1, 1, 1)
+        dones = torch.tensor(dones, dtype=torch.float32, device=self.device).view(-1, 1, 1)
         actions = torch.tensor(actions, dtype=torch.long, device=self.device)
-        rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device)
-        next_states = torch.tensor(next_states, dtype=torch.float32, device=self.device)
-        dones = torch.tensor(dones, dtype=torch.float32, device=self.device)
-        action_taken_grid = torch.tensor(action_taken_grid, dtype=torch.long, device=self.device)
+        action_taken_grid = torch.tensor(np.array(action_taken_grid), dtype=torch.long, device=self.device)
+
+        device = states.device
 
         states_t = self.encoder(states)
         next_states_t = self.encoder(next_states)
@@ -863,7 +863,7 @@ class Agent:
                 continue
 
             out = head(states_t)
-            tgt = target_heads[name](next_states_t)
+            tgt = self.target_heads[name](next_states_t)
 
             param_indices = cfg["param_indices"]
 
