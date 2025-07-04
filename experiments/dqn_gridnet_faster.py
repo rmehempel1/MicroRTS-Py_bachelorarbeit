@@ -841,8 +841,8 @@ class Agent:
 
         # Konvertiere Eingaben in Tensoren
         states = torch.tensor(states, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
-        if isinstance(next_states, list):
-            next_states = np.array(next_states)
+        if isinstance(next_states, list) or isinstance(next_states, np.ndarray) and next_states.ndim == 1:
+            next_states = np.stack(next_states)
         assert len(next_states.shape) == 4, f"next_states shape invalid: {next_states.shape}"
         next_states = torch.tensor(next_states, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
 
