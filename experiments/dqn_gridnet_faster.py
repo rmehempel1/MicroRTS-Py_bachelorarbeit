@@ -839,15 +839,17 @@ class Agent:
     def calc_loss(self, batch, target_heads, gamma=0.99):
         states, actions, rewards, next_states, dones, action_taken_grid = batch
 
-        states_t = torch.tensor(states, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
-        next_states_t = torch.tensor(next_states, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
+        # Konvertiere Eingaben in Tensoren
+        states = torch.tensor(states, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
+        if isinstance(next_states, list):
+            next_states = np.array(next_states)
+        assert len(next_states.shape) == 4, f"next_states shape invalid: {next_states.shape}"
+        next_states = torch.tensor(next_states, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
+
         rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device).view(-1, 1, 1)
         dones = torch.tensor(dones, dtype=torch.float32, device=self.device).view(-1, 1, 1)
         actions = torch.tensor(actions, dtype=torch.long, device=self.device)
         action_taken_grid = torch.tensor(np.array(action_taken_grid), dtype=torch.long, device=self.device)
-
-
-
 
         q_preds = []
         q_tgts = []
@@ -860,8 +862,8 @@ class Agent:
             if not mask.any():
                 continue
 
-            out = head(states_t)
-            tgt = target_heads[name](next_states_t)
+            out = head(states)
+            tgt = target_heads[name](next_states)
 
             param_indices = cfg["param_indices"]
 
@@ -876,7 +878,7 @@ class Agent:
                         logits = out[2]  # type logits
                         tgt_logits = tgt[2]
                     else:
-                        continue  # produce hat nur decision und unit_type
+                        continue
                 else:
                     if param_name == "decision":
                         logits = out[0]
