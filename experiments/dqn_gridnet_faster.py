@@ -453,7 +453,7 @@ def merge_actions(
                 elif a_type == 4 and produce_params is not None and produce_type is not None:
                     full_action[i, j, k, 4] = produce_params[i, j, k]
                     # full_action[i, j, k, 5] = produce_type[i, j, k]
-                    print("Produce")
+                    #print("Produce")
 
                 elif a_type == 1 and move_params is not None:
                     full_action[i, j, k, 1] = move_params[i, j, k]
@@ -838,7 +838,7 @@ class Agent:
 
     def calc_loss(self, batch, target_heads, gamma=0.99):
         states, actions, rewards, next_states, dones, action_taken_grid = batch
-        device = states.device
+
 
         # Tensor-Konvertierung
         states = torch.tensor(states, dtype=torch.float32, device=self.device)
