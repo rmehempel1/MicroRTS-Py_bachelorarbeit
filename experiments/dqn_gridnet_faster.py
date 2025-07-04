@@ -838,6 +838,8 @@ class Agent:
 
     def calc_loss(self, batch, target_heads, gamma=0.99):
         states, actions, rewards, next_states, dones, action_taken_grid = batch
+        print("states shape:", states.shape)
+        print("next_states shape:", next_states.shape)
 
         states = torch.tensor(states, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
         next_states = torch.tensor(next_states, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
