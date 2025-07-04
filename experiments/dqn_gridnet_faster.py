@@ -1,6 +1,7 @@
 import argparse
 import os
 import random
+import csv
 import subprocess
 import time
 from distutils.util import strtobool
@@ -168,6 +169,26 @@ def to_scalar(x):
     except Exception as e:
         print(f"[WARN] to_scalar failed for {x}: {e}")
         return 0.0
+
+
+def log_metrics_to_csv(log_file, episode, loss, reward, epsilon, sps):
+    """
+    Schreibt Metriken pro Episode in eine CSV-Datei.
+
+    :param log_file: Pfad zur CSV-Datei
+    :param episode: Episodennummer
+    :param loss: Durchschnittlicher Loss dieser Episode
+    :param reward: Gesamtreward der Episode
+    :param epsilon: Epsilon-Wert zu dieser Episode
+    :param sps: Schritte pro Sekunde während dieser Episode
+    """
+    file_exists = os.path.isfile(log_file)
+
+    with open(log_file, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        if not file_exists:
+            writer.writerow(['Episode', 'Loss', 'Reward', 'Epsilon', 'SPS'])
+        writer.writerow([episode, loss, reward, epsilon, sps])
 
 
 def log_training_status(episode_idx, frame_idx, reward, mean_reward, epsilon, start_time):
@@ -500,12 +521,51 @@ class Agent:
         }
 
         self.head_config = {
-            "attack": {"type_id": 5, "indices": (0, 6), "classes": (2, 4)},
-            "harvest": {"type_id": 2, "indices": (0, 2), "classes": (2, 4)},  # type_id: Acion cpmponentn action type id
-            "return": {"type_id": 3, "indices": (0, 3), "classes": (2, 4)},  # indices: Relevanten Action components
-            "produce": {"type_id": 4, "indices": (0, 4, 5), "classes": (2, 4, 7)},
-            # classes: Decider, Direction, produce_type
-            "move": {"type_id": 1, "indices": (0, 1), "classes": (2, 4)}  # classes: Decider, Direction
+            "attack": {
+                "type_id": 5,
+                "indices": (0, 6), #indices: relevanten action Components
+                "classes": (2, 4),  #2-> decision 4->richtungen
+                "param_indices": {
+                    "decision": 0,
+                    "direction": 6
+                }
+            },
+            "harvest": {
+                "type_id": 2,
+                "indices": (0, 2),
+                "classes": (2, 4),
+                "param_indices": {
+                    "decision": 0,
+                    "direction": 2
+                }
+            },
+            "return": {
+                "type_id": 3,
+                "indices": (0, 3),
+                "classes": (2, 4),
+                "param_indices": {
+                    "decision": 0,
+                    "direction": 3
+                }
+            },
+            "produce": {
+                "type_id": 4,
+                "indices": (0, 4, 5),
+                "classes": (2, 4, 7),
+                "param_indices": {
+                    "decision": 0,
+                    "unit_type": 5
+                }
+            },
+            "move": {
+                "type_id": 1,
+                "indices": (0, 1),
+                "classes": (2, 4),
+                "param_indices": {
+                    "decision": 0,
+                    "direction": 1
+                }
+            }
         }
 
     def _get_structured_action_masks(self, state, device):
@@ -624,6 +684,7 @@ class Agent:
             return done_reward
         return None
 
+    @torch.no_grad()
     def play_step(self, epsilon=0.0, device="cpu"):
         """
                 for idx in range(64):
@@ -750,15 +811,6 @@ class Agent:
         self.total_reward += reward
 
         # print("action.shape before storing:", action.shape)
-        # Reward-Shaping: Bestrafe noop-Aktionen
-        reward = torch.tensor(reward, dtype=torch.float32)
-        action_taken_grid_tensor = torch.tensor(action_taken_grid, dtype=torch.long)
-
-        noop_counts = (action_taken_grid_tensor == 0).sum(dim=(1, 2))  # Anzahl Noops pro Env
-        noop_penalty = 0.01
-        penalty = noop_counts * noop_penalty  # shape: (num_envs,)
-        reward -= penalty
-        reward = reward.numpy()  # zurück zu NumPy, da es so gespeichert wird
 
         for env_i in range(self.env.num_envs):
             self.exp_buffer.append((
@@ -777,70 +829,64 @@ class Agent:
             return done_reward
         return None
 
-    def calc_loss(self, batch, target_heads, gamma=0.99):
-        states, actions, action_taken_grid, rewards, dones, next_states = batch
-        device = self.device
+    def calc_loss(self, batch, gamma=0.99):
+        states, actions, rewards, next_states, dones, action_taken_grid = batch
+        device = states.device
 
-        # Tensor-Konvertierung
-        states_t = torch.tensor(states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
-        next_states_t = torch.tensor(next_states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
-        rewards_t = torch.tensor(rewards, dtype=torch.float32, device=device).view(-1, 1, 1)
-        dones_t = torch.tensor(dones, dtype=torch.float32, device=device).view(-1, 1, 1)
-        actions = torch.tensor(actions, dtype=torch.long, device=device)
-        action_taken_grid = torch.tensor(np.array(action_taken_grid), dtype=torch.long, device=device)
+        states_t = self.encoder(states)
+        next_states_t = self.encoder(next_states)
 
-        B, H, W = action_taken_grid.shape
-
-        q_preds, q_tgts = [], []
+        q_preds = []
+        q_tgts = []
 
         for name, head in self.heads.items():
             cfg = self.head_config[name]
             type_id = cfg["type_id"]
-            mask = (action_taken_grid == type_id)  # [B, H, W]
+            mask = (action_taken_grid == type_id)
 
             if not mask.any():
                 continue
 
             out = head(states_t)
-            tgt = target_heads[name](next_states_t)
+            tgt = self.target_heads[name](next_states_t)
 
+            param_indices = cfg["param_indices"]
+
+            # Sonderfall für 'produce': eigene Struktur
             if name == "produce":
-                dir_idx, type_idx = cfg["indices"][1], cfg["indices"][2]
-                act_dirs = actions[:, :, :, dir_idx]
-                act_types = actions[:, :, :, type_idx]
+                unit_type_idx = param_indices["unit_type"]
+                act_param = actions[:, :, :, unit_type_idx]  # [B, H, W]
+                logits = out[0]  # nur ein Head für produce
+                q_val = logits.gather(1, act_param.unsqueeze(1)).squeeze(1)
+                tgt_logits = tgt[0]
+                tgt_max = tgt_logits.max(1).values
 
-                # Q-Wert für gewählte Parameter (nur wo type_id passt)
-                q_dir = out[1].gather(1, act_dirs.unsqueeze(1)).squeeze(1)  # [B, H, W]
-                q_type = out[2].gather(1, act_types.unsqueeze(1)).squeeze(1)
-
-                tgt_dir = tgt[1].max(1).values  # [B, H, W]
-                tgt_type = tgt[2].max(1).values
-
-                q_preds.append(q_dir[mask])
-                q_preds.append(q_type[mask])
-
-                q_tgts.append(rewards_t.expand_as(tgt_dir)[mask] + gamma * tgt_dir[mask] * (
-                            1.0 - dones_t.expand_as(tgt_dir)[mask]))
-                q_tgts.append(rewards_t.expand_as(tgt_type)[mask] + gamma * tgt_type[mask] * (
-                            1.0 - dones_t.expand_as(tgt_type)[mask]))
-
-            else:
-                param_idx = cfg["indices"][1]
-                act_param = actions[:, :, :, param_idx]
-
-                q = out[1].gather(1, act_param.unsqueeze(1)).squeeze(1)
-                tgt_q = tgt[1].max(1).values
-
-                q_preds.append(q[mask])
+                q_preds.append(q_val[mask])
                 q_tgts.append(
-                    rewards_t.expand_as(tgt_q)[mask] + gamma * tgt_q[mask] * (1.0 - dones_t.expand_as(tgt_q)[mask]))
+                    rewards.expand_as(tgt_max)[mask] +
+                    gamma * tgt_max[mask] * (1.0 - dones.expand_as(tgt_max)[mask])
+                )
+            else:
+                for param_name, idx in param_indices.items():
+                    act_param = actions[:, :, :, idx]  # [B, H, W]
+                    logits = out[0] if param_name == "decision" else out[idx]
+                    q_val = logits.gather(1, act_param.unsqueeze(1)).squeeze(1)  # [B, H, W]
 
-        if q_preds and q_tgts:
-            q_preds_t = torch.cat(q_preds)
-            q_tgts_t = torch.cat(q_tgts)
-            return F.mse_loss(q_preds_t, q_tgts_t)
-        else:
-            return torch.tensor(0.0, device=device)
+                    tgt_logits = tgt[0] if param_name == "decision" else tgt[idx]
+                    tgt_max = tgt_logits.max(1).values  # [B, H, W]
+
+                    q_preds.append(q_val[mask])
+                    q_tgts.append(
+                        rewards.expand_as(tgt_max)[mask] +
+                        gamma * tgt_max[mask] * (1.0 - dones.expand_as(tgt_max)[mask])
+                    )
+
+        if not q_preds:
+            return torch.tensor(0.0, requires_grad=True, device=states.device)
+
+        q_preds_t = torch.cat(q_preds)
+        q_tgts_t = torch.cat(q_tgts)
+        return F.mse_loss(q_preds_t, q_tgts_t)
 
 
 """
@@ -961,9 +1007,9 @@ if __name__ == "__main__":
     """
     Training
     """
-    # Trainingsteil am Ende deines Skripts ergänzen oder in main() kapseln
 
-    expbuffer = ExperienceBuffer(capacity=10000)
+
+    expbuffer = ExperienceBuffer(capacity=10000*10)
     agent = Agent(envs, expbuffer, device=device)
     total_params = sum(p.numel() for head in agent.heads.values() for p in head.parameters() if p.requires_grad)
     print(f"Gesamtanzahl der trainierbaren Parameter: {total_params}")
@@ -985,8 +1031,19 @@ if __name__ == "__main__":
     mean_reward = 0.0  # vor der Trainingsschleife definieren
 
     reward_queue = deque(maxlen=100)  # Vor der Schleife
+
+    if not args.exp_name:
+        args.exp_name = "default_exp"
+    model_dir=f"./{args.exp_name}/model/"
+    os.makedirs(model_dir, exist_ok=True)
+    log_dir=f"./{args.exp_name}/csv/"
+    os.makedirs(log_dir, exist_ok=True)
     print("Starte Training")
     start_time = time.time()
+
+    target_heads = {name: head for name, head in agent.heads.items()}  # Zielnetz initialisieren
+    sync_target_heads(agent.heads, target_heads)  # Direkt synchronisieren
+
     while frame_idx < args.total_timesteps:
         frame_idx += 1
         epsilon = max(args.epsilon_final, args.epsilon_start - frame_idx / args.epsilon_decay)
@@ -1002,14 +1059,20 @@ if __name__ == "__main__":
             reward_queue.append(reward)
 
             mean_reward = np.mean(total_rewards[-100:])
-            print(f"Episode {episode_idx}, Frame {frame_idx}: "
-                  f"Mean(100)={mean_reward:.2f}, Epsilon={epsilon:.2f}")
+            log_metrics_to_csv(
+                log_file=os.path.join(log_dir, f"{args.exp_name}.csv"),
+                episode=episode_idx,
+                loss=loss.item() if 'loss' in locals() else None,
+                reward=reward,
+                epsilon=epsilon,
+                sps=frame_idx / (time.time() - start_time)
+            )
 
             if best_mean_reward is None or best_mean_reward < mean_reward:
                 print(f"Neues bestes Ergebnis: {best_mean_reward} → {mean_reward:.2f}")
                 best_mean_reward = mean_reward
                 for name, head in agent.heads.items():
-                    torch.save(head.state_dict(), f"{args.exp_name}_{name}_best.pth")
+                    torch.save(head.state_dict(), os.path.join(model_dir, f"{args.exp_name}_{name}_best.pth"))
 
         if len(expbuffer) < args.batch_size:
             continue
@@ -1028,13 +1091,11 @@ if __name__ == "__main__":
             print("frame index:", frame_idx)
             print("Loss:", loss)
 
-        if frame_idx % 500000 == 0:
+        if frame_idx % 250000 == 0:
             for name, head in agent.heads.items():
-                torch.save(head.state_dict(), f"checkpoints/{args.exp_name}_{name}_{frame_idx}.pth")
+                torch.save(head.state_dict(), os.path.join(model_dir,f"{args.exp_name}_{name}_{frame_idx}.pth"))
 
-        writer.add_scalar("charts/epsilon", epsilon, frame_idx)
-        if len(reward_queue) > 0:
-            writer.add_scalar("charts/mean_100_ep_reward", np.mean(reward_queue), frame_idx)
+
 
     print("Training abgeschlossen.")
 
