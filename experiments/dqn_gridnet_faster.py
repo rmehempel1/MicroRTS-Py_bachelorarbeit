@@ -838,8 +838,6 @@ class Agent:
 
     def calc_loss(self, batch, target_heads, gamma=0.99):
         states, actions, rewards, next_states, dones, action_taken_grid = batch
-        print("states shape:", states.shape)
-        print("next_states shape:", next_states.shape)
 
         states = torch.tensor(states, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
         next_states = torch.tensor(next_states, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
@@ -848,7 +846,6 @@ class Agent:
         actions = torch.tensor(actions, dtype=torch.long, device=self.device)
         action_taken_grid = torch.tensor(np.array(action_taken_grid), dtype=torch.long, device=self.device)
 
-        device = states.device
 
         states_t = self.encoder(states)
         next_states_t = self.encoder(next_states)
@@ -865,17 +862,33 @@ class Agent:
                 continue
 
             out = head(states_t)
-            tgt = self.target_heads[name](next_states_t)
+            tgt = target_heads[name](next_states_t)
 
             param_indices = cfg["param_indices"]
 
-            # Sonderfall für 'produce': eigene Struktur
-            if name == "produce":
-                unit_type_idx = param_indices["unit_type"]
-                act_param = actions[:, :, :, unit_type_idx]  # [B, H, W]
-                logits = out[0]  # nur ein Head für produce
+            for param_name, idx in param_indices.items():
+                act_param = actions[:, :, :, idx]  # [B, H, W]
+
+                if name == "produce":
+                    if param_name == "decision":
+                        logits = out[0]  # decision logits
+                        tgt_logits = tgt[0]
+                    elif param_name == "unit_type":
+                        logits = out[2]  # type logits
+                        tgt_logits = tgt[2]
+                    else:
+                        continue  # produce hat nur decision und unit_type
+                else:
+                    if param_name == "decision":
+                        logits = out[0]
+                        tgt_logits = tgt[0]
+                    elif param_name == "direction":
+                        logits = out[1]
+                        tgt_logits = tgt[1]
+                    else:
+                        continue
+
                 q_val = logits.gather(1, act_param.unsqueeze(1)).squeeze(1)
-                tgt_logits = tgt[0]
                 tgt_max = tgt_logits.max(1).values
 
                 q_preds.append(q_val[mask])
@@ -883,20 +896,6 @@ class Agent:
                     rewards.expand_as(tgt_max)[mask] +
                     gamma * tgt_max[mask] * (1.0 - dones.expand_as(tgt_max)[mask])
                 )
-            else:
-                for param_name, idx in param_indices.items():
-                    act_param = actions[:, :, :, idx]  # [B, H, W]
-                    logits = out[0] if param_name == "decision" else out[idx]
-                    q_val = logits.gather(1, act_param.unsqueeze(1)).squeeze(1)  # [B, H, W]
-
-                    tgt_logits = tgt[0] if param_name == "decision" else tgt[idx]
-                    tgt_max = tgt_logits.max(1).values  # [B, H, W]
-
-                    q_preds.append(q_val[mask])
-                    q_tgts.append(
-                        rewards.expand_as(tgt_max)[mask] +
-                        gamma * tgt_max[mask] * (1.0 - dones.expand_as(tgt_max)[mask])
-                    )
 
         if not q_preds:
             return torch.tensor(0.0, requires_grad=True, device=states.device)
