@@ -506,6 +506,13 @@ class Agent:
         self.exp_buffer = exp_buffer
         self._reset()
 
+        self.encoder = nn.Sequential(
+            nn.Conv2d(in_channels=29, out_channels=32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1),
+            nn.ReLU()
+        ).to(self.device)
+
         self.movement_head = MovementHead(in_channels=29).to(self.device)
         self.harvest_head = MovementHead(in_channels=29).to(self.device)
         self.return_head = MovementHead(in_channels=29).to(self.device)
@@ -834,12 +841,12 @@ class Agent:
         device = states.device
 
         # Tensor-Konvertierung
-        states_t = torch.tensor(states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
-        next_states_t = torch.tensor(next_states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
-        rewards_t = torch.tensor(rewards, dtype=torch.float32, device=device).view(-1, 1, 1)
-        dones_t = torch.tensor(dones, dtype=torch.float32, device=device).view(-1, 1, 1)
-        actions = torch.tensor(actions, dtype=torch.long, device=device)
-        action_taken_grid = torch.tensor(np.array(action_taken_grid), dtype=torch.long, device=device)
+        states = torch.tensor(states, dtype=torch.float32, device=self.device)
+        actions = torch.tensor(actions, dtype=torch.long, device=self.device)
+        rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device)
+        next_states = torch.tensor(next_states, dtype=torch.float32, device=self.device)
+        dones = torch.tensor(dones, dtype=torch.float32, device=self.device)
+        action_taken_grid = torch.tensor(action_taken_grid, dtype=torch.long, device=self.device)
 
         states_t = self.encoder(states)
         next_states_t = self.encoder(next_states)
