@@ -170,10 +170,9 @@ def to_scalar(x):
         print(f"[WARN] to_scalar failed for {x}: {e}")
         return 0.0
 
-
-def log_metrics_to_csv(log_file, episode, loss, reward, epsilon, sps):
+def log_metrics_to_csv(log_file, episode, loss, reward, epsilon, sps, start_time):
     """
-    Schreibt Metriken pro Episode in eine CSV-Datei.
+    Schreibt Metriken pro Episode in eine CSV-Datei, inklusive der bisherigen Laufzeit.
 
     :param log_file: Pfad zur CSV-Datei
     :param episode: Episodennummer
@@ -181,15 +180,16 @@ def log_metrics_to_csv(log_file, episode, loss, reward, epsilon, sps):
     :param reward: Gesamtreward der Episode
     :param epsilon: Epsilon-Wert zu dieser Episode
     :param sps: Schritte pro Sekunde während dieser Episode
+    :param start_time: Startzeitpunkt des Trainings (z. B. time.time() zu Beginn)
     """
     file_exists = os.path.isfile(log_file)
+    runtime = time.time() - start_time  # Laufzeit in Sekunden
 
     with open(log_file, mode='a', newline='') as file:
         writer = csv.writer(file)
         if not file_exists:
-            writer.writerow(['Episode', 'Loss', 'Reward', 'Epsilon', 'SPS'])
-        writer.writerow([episode, loss, reward, epsilon, sps])
-
+            writer.writerow(['Episode', 'Loss', 'Reward', 'Epsilon', 'SPS', 'Runtime_sec'])
+        writer.writerow([episode, loss, reward, epsilon, sps, round(runtime, 2)])
 
 def log_training_status(episode_idx, frame_idx, reward, mean_reward, epsilon, start_time):
     reward_val = to_scalar(reward)
@@ -462,45 +462,12 @@ def merge_actions(
     return full_action.reshape(E, H * W * 7)
 
 
-def get_action_type_grid(action_type_mask,
-                                    attack_decision,
-                                    harvest_decision,
-                                    return_decision,
-                                    produce_decision,
-                                    move_decision):
-    """
-    Priorisierte Auswahl der Action Types basierend auf gültigen Masken
-    1: move, 2: harvest, 3: return, 4: produce, 5: attack
-    Default ist 0 (no-op)
-    """
-    E, H, W = attack_decision.shape
-    action_type_grid = np.zeros((E, H, W), dtype=np.int32)  # 0 = no-op
-
-    for i in range(E):
-        for j in range(H):
-            for k in range(W):
-                # action_type_mask: [E, 6, H, W] → [E, H, W, 6]
-                valid_types = action_type_mask[i, :, j, k].cpu().numpy()
-                if valid_types[5] and attack_decision[i, j, k] == 1:
-                    action_type_grid[i, j, k] = 5
-                elif valid_types[2] and harvest_decision[i, j, k] == 1:
-                    action_type_grid[i, j, k] = 2
-                elif valid_types[3] and return_decision[i, j, k] == 1:
-                    action_type_grid[i, j, k] = 3
-                elif valid_types[4] and produce_decision[i, j, k] == 1:
-                    action_type_grid[i, j, k] = 4
-                elif valid_types[1] and move_decision[i, j, k] == 1:
-                    action_type_grid[i, j, k] = 1
-                elif valid_types[0]:
-                    action_type_grid[i, j, k] = 0  # fallback to no-op if nothing else möglich
-
-    return action_type_grid
-
 class Agent:
     def __init__(self, env, exp_buffer, device="cpu"):
         """
         Initialisiert den Agenten mit Zugriff auf die Umgebung und den Replay Buffer.
         """
+
         self.device = device
         self.env = env
         self.exp_buffer = exp_buffer
@@ -593,6 +560,40 @@ class Agent:
             "attack_dir": reshape_and_convert(raw_masks[:, :, 29:78], 49),
         }
 
+    def get_action_type_grid(self, action_type_mask,
+                             attack_decision,
+                             harvest_decision,
+                             return_decision,
+                             produce_decision,
+                             move_decision):
+        """
+        Priorisierte Auswahl der Action Types basierend auf gültigen Masken
+        1: move, 2: harvest, 3: return, 4: produce, 5: attack
+        Default ist 0 (no-op)
+        """
+        E, H, W = attack_decision.shape
+        action_type_grid = np.zeros((E, H, W), dtype=np.int32)  # 0 = no-op
+
+        for i in range(E):
+            for j in range(H):
+                for k in range(W):
+                    # action_type_mask: [E, 6, H, W] → [E, H, W, 6]
+                    valid_types = self._get_structured_action_masks["action_type"]
+                    if valid_types[5] and attack_decision[i, j, k] == 1:
+                        action_type_grid[i, j, k] = 5
+                    elif valid_types[2] and harvest_decision[i, j, k] == 1:
+                        action_type_grid[i, j, k] = 2
+                    elif valid_types[3] and return_decision[i, j, k] == 1:
+                        action_type_grid[i, j, k] = 3
+                    elif valid_types[4] and produce_decision[i, j, k] == 1:
+                        action_type_grid[i, j, k] = 4
+                    elif valid_types[1] and move_decision[i, j, k] == 1:
+                        action_type_grid[i, j, k] = 1
+                    elif valid_types[0]:
+                        action_type_grid[i, j, k] = 0  # fallback to no-op if nothing else möglich
+
+        return action_type_grid
+
     def _reset(self):
         """
         Startet eine neue Episode und setzt interne Zustände zurück.
@@ -643,7 +644,7 @@ class Agent:
         produce_type = produce_type.argmax(dim=1).cpu().numpy()
 
         # Führe Teilaktion zur Gesamtaktion zusammen
-        action_type_grid = get_action_type_grid(
+        action_type_grid = self.get_action_type_grid(
             masks["action_type"],  # das ist die action_type_mask
             attack_mask,
             harvest_mask,
@@ -751,7 +752,7 @@ class Agent:
         else:
             # Zustand vorbereiten für Netzwerkeingabe
             state_a = np.array(self.state, copy=False)
-            state_v = torch.tensor(self.state, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
+            state_v = torch.tensor(self.state_a, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
 
             """Jeder Kopf muss alle seine maximal Möglichen Aktionen machen, diese einzeln. Die beste Aktion an Merge 
             schicken, welcher die Gesamtaktion ausführt
@@ -792,7 +793,7 @@ class Agent:
             produce_type = produce_type.argmax(dim=1).cpu().numpy()
 
             # Führe Teilaktion zur Gesamtaktion zusammen
-            action_type_grid = get_action_type_grid(
+            action_type_grid = self.get_action_type_grid(
                 masks["action_type"],  # das ist die action_type_mask
                 attack_mask,
                 harvest_mask,
@@ -1084,7 +1085,8 @@ if __name__ == "__main__":
                 loss=loss.item() if 'loss' in locals() else None,
                 reward=reward,
                 epsilon=epsilon,
-                sps=frame_idx / (time.time() - start_time)
+                sps=frame_idx / (time.time() - start_time),
+                start_time=start_time
             )
 
             if best_mean_reward is None or best_mean_reward < mean_reward:
