@@ -1086,7 +1086,7 @@ if __name__ == "__main__":
 
     expbuffer = ExperienceBuffer(capacity=10000*10)
     agent = Agent(envs, expbuffer, device=device)
-    set_decision_heads_to_prefer_one(agent)
+    #decset_decision_heads_to_prefer_one(agent)
     total_params = sum(p.numel() for head in agent.heads.values() for p in head.parameters() if p.requires_grad)
     print(f"Gesamtanzahl der trainierbaren Parameter: {total_params}")
 
