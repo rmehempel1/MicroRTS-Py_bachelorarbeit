@@ -329,6 +329,7 @@ class ProduceHead(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
 
+
         self.encoder_decision = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),  # H × W sollte gleich bleiben
             nn.ReLU(),
@@ -372,6 +373,7 @@ class AttackHead(nn.Module):
 
     def __init__(self, in_channels):
         super().__init__()
+
 
         self.encoder_decision = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),  # H × W sollte gleich bleiben
@@ -655,14 +657,13 @@ class Agent:
         produce_type = produce_type.argmax(dim=1).cpu().numpy()
 
         # Führe Teilaktion zur Gesamtaktion zusammen
-        action_type_grid = self.get_action_type_grid(
-            masks["action_type"],  # das ist die action_type_mask
-            attack_mask,
-            harvest_mask,
-            return_mask,
-            produce_mask,
-            move_mask
-        )
+        action_type_grid = self.get_action_type_grid(masks,
+                                                     attack_decision,
+                                                     harvest_decision,
+                                                     return_decision,
+                                                     produce_decision,
+                                                     move_decision)
+        action_taken_grid = action_type_grid
 
         """
 
@@ -1034,6 +1035,16 @@ if __name__ == "__main__":
     input("Drücke Enter, um die Umgebung zu schließen...")
     """
 
+
+    def set_decision_heads_to_prefer_one(agent):
+        for head in agent.heads.values():
+            if hasattr(head, "decision_head"):
+                with torch.no_grad():
+                    head.decision_head.weight.zero_()
+                    head.decision_head.bias.fill_(0.0)
+                    head.decision_head.bias[1] = 10.0
+
+
     """
     Training
     """
@@ -1041,6 +1052,7 @@ if __name__ == "__main__":
 
     expbuffer = ExperienceBuffer(capacity=10000*10)
     agent = Agent(envs, expbuffer, device=device)
+    set_decision_heads_to_prefer_one(agent)
     total_params = sum(p.numel() for head in agent.heads.values() for p in head.parameters() if p.requires_grad)
     print(f"Gesamtanzahl der trainierbaren Parameter: {total_params}")
 
