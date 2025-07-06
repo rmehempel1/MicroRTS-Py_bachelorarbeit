@@ -560,7 +560,7 @@ class Agent:
             "attack_dir": reshape_and_convert(raw_masks[:, :, 29:78], 49),
         }
 
-    def get_action_type_grid(self, action_type_mask,
+    def get_action_type_grid(self,  structured_masks,
                              attack_decision,
                              harvest_decision,
                              return_decision,
@@ -571,6 +571,7 @@ class Agent:
         1: move, 2: harvest, 3: return, 4: produce, 5: attack
         Default ist 0 (no-op)
         """
+        action_type_mask = structured_masks["action_type"]
         E, H, W = attack_decision.shape
         action_type_grid = np.zeros((E, H, W), dtype=np.int32)  # 0 = no-op
 
@@ -578,7 +579,7 @@ class Agent:
             for j in range(H):
                 for k in range(W):
                     # action_type_mask: [E, 6, H, W] → [E, H, W, 6]
-                    valid_types = self._get_structured_action_masks["action_type"]
+                    valid_types = action_type_mask[i, :, j, k].cpu().numpy()
                     if valid_types[5] and attack_decision[i, j, k] == 1:
                         action_type_grid[i, j, k] = 5
                     elif valid_types[2] and harvest_decision[i, j, k] == 1:
@@ -792,15 +793,14 @@ class Agent:
             produce_type = produce_type.argmax(dim=1).cpu().numpy()
 
             # Führe Teilaktion zur Gesamtaktion zusammen
-            action_type_grid = self.get_action_type_grid(
-                masks["action_type"],  # das ist die action_type_mask
-                attack_mask,
-                harvest_mask,
-                return_mask,
-                produce_mask,
-                move_mask
-            )
-            action_taken_grid=action_type_grid
+            action_type_grid = self.get_action_type_grid(masks,
+                                                         attack_decision,
+                                                         harvest_decision,
+                                                         return_decision,
+                                                         produce_decision,
+                                                         move_decision)
+
+
             """
 
             print("attack_mask.shape:", attack_mask.shape)
