@@ -286,122 +286,135 @@ class ExperienceBuffer:
             next_states
         )
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 class MovementHead(nn.Module):
-    """Ebenfalls verwendet für Harvest und Return"""
-
-    """Aktuell Getrennte Encoder, um Parameter zu sparen könnten alle den selben Encoder verwenden und anschließen über den Head differenzieren"""
-
     def __init__(self, in_channels):
         super().__init__()
 
         self.encoder_decision = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),  # H × W sollte gleich bleiben
+            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),  # H × W bleibt gleich
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
             nn.ReLU()
         )
 
-        self.decision_head = nn.Conv2d(64, 2,
-                                       kernel_size=1)  # Output Shape für Decision [B, C, H, W], für jedes Grid 0 oder 1 -> C=2 [0,1]
+        self.decision_head = nn.Sequential(
+            nn.Conv2d(64, 2, kernel_size=1),
+            nn.Softmax(dim=1)  # Softmax über [no-op, move]
+        )
 
         self.encoder_dir = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),  # H × W sollte gleich bleiben
+            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),  # H × W bleibt gleich
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
             nn.ReLU()
         )
 
-        self.dir_head = nn.Conv2d(64, 4, kernel_size=1)  # C=[0-3]
-
-    def forward(self, x):
-        x_decision = self.encoder_decision(x)  # Shape bleibt (B, 64, H, W)
-        decision_logits = self.decision_head(x_decision)  # → (B, 2, H, W)
-
-        x_dir = self.encoder_dir(x)  # Shape bleibt (B, 64, H, W)
-        dir_logits = self.dir_head(x_dir)  # → (B, 2, H, W)
-
-        return decision_logits, dir_logits
-
-
-class ProduceHead(nn.Module):
-
-    def __init__(self, in_channels):
-        super().__init__()
-
-
-        self.encoder_decision = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),  # H × W sollte gleich bleiben
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),  # H × W bleibt gleich
-            nn.ReLU()
+        self.dir_head = nn.Sequential(
+            nn.Conv2d(64, 4, kernel_size=1),
+            nn.Softmax(dim=1)  # Softmax über Richtungen 0–3
         )
-        self.decision_head = nn.Conv2d(64, 2,
-                                       kernel_size=1)  # Output Shape für Decision [B, C, H, W], für jedes Grid 0 oder 1 -> C=2 [0,1]
-
-        self.encoder_dir = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),  # H × W sollte gleich bleiben
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),  # H × W bleibt gleich
-            nn.ReLU()
-        )
-        self.dir_head = nn.Conv2d(64, 4, kernel_size=1)  # C=[0-3]
-
-        self.encoder_type = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),  # H × W sollte gleich bleiben
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),  # H × W bleibt gleich
-            nn.ReLU()
-        )
-        self.type_head = nn.Conv2d(64, 7, kernel_size=1)  # C=[0-6] resource, base, barrack,worker, light, heavy, ranged
 
     def forward(self, x):
         x_decision = self.encoder_decision(x)
-        decision_logits = self.decision_head(x_decision)
+        decision_probs = self.decision_head(x_decision)  # [B, 2, H, W]
 
         x_dir = self.encoder_dir(x)
-        dir_logits = self.dir_head(x_dir)
+        dir_probs = self.dir_head(x_dir)  # [B, 4, H, W]
 
-        x_type = self.encoder_type(x)
-        type_logits = self.type_head(x_type)
-
-        return decision_logits, dir_logits, type_logits
-
+        return decision_probs, dir_probs
 
 class AttackHead(nn.Module):
-    """Aktuell identisch zum movement head, unklar wie attack direction codiert ist"""
-
     def __init__(self, in_channels):
         super().__init__()
 
-
         self.encoder_decision = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),  # H × W sollte gleich bleiben
+            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),  # H × W bleibt gleich
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
             nn.ReLU()
         )
 
-        self.decision_head = nn.Conv2d(64, 2,
-                                       kernel_size=1)  # Output Shape für Decision [B, C, H, W], für jedes Grid 0 oder 1 -> C=2 [0,1]
+        # Entscheidung: angreifen oder nicht → 2 Klassen
+        self.decision_head = nn.Sequential(
+            nn.Conv2d(64, 2, kernel_size=1),
+            nn.Softmax(dim=1)  # Softmax über [no-op, attack]
+        )
 
-        self.encoder_dir = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),  # H × W sollte gleich bleiben
+        self.encoder_target = nn.Sequential(
+            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),  # H × W bleibt gleich
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
             nn.ReLU()
         )
 
-        self.dir_head = nn.Conv2d(64, 49, kernel_size=1)  # C=[0-3]
+        # Zielauswahl (Index aus 49 möglichen Zellen = 7x7 Grid)
+        self.target_head = nn.Sequential(
+            nn.Conv2d(64, 49, kernel_size=1),
+            nn.Softmax(dim=1)  # Softmax über mögliche Zielzellen
+        )
 
     def forward(self, x):
-        x_decision = self.encoder_decision(x)  # Shape bleibt (B, 64, H, W)
-        decision_logits = self.decision_head(x_decision)  # → (B, 2, H, W)
+        x_decision = self.encoder_decision(x)
+        decision_probs = self.decision_head(x_decision)  # [B, 2, H, W]
 
-        x_dir = self.encoder_dir(x)  # Shape bleibt (B, 64, H, W)
-        dir_logits = self.dir_head(x_dir)  # → (B, 2, H, W)
+        x_target = self.encoder_target(x)
+        target_probs = self.target_head(x_target)        # [B, 49, H, W]
 
-        return decision_logits, dir_logits
+        return decision_probs, target_probs
+
+
+
+class ProduceHead(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+
+        # Entscheidung: produzieren oder nicht (2 Klassen)
+        self.encoder_decision = nn.Sequential(
+            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU()
+        )
+        self.decision_head = nn.Sequential(
+            nn.Conv2d(64, 2, kernel_size=1),
+            nn.Softmax(dim=1)  # [no-op, produce]
+        )
+
+        # Richtung (4 Richtungen)
+        self.encoder_dir = nn.Sequential(
+            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU()
+        )
+        self.dir_head = nn.Sequential(
+            nn.Conv2d(64, 4, kernel_size=1),
+            nn.Softmax(dim=1)
+        )
+
+        # Typauswahl (UnitTypeTable size, z. B. 7)
+        self.encoder_type = nn.Sequential(
+            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU()
+        )
+        self.type_head = nn.Sequential(
+            nn.Conv2d(64, 7, kernel_size=1),  # ggf. anpassen, falls andere Unit-Anzahl
+            nn.Softmax(dim=1)
+        )
+
+    def forward(self, x):
+        decision_probs = self.decision_head(self.encoder_decision(x))  # [B, 2, H, W]
+        dir_probs = self.dir_head(self.encoder_dir(x))                 # [B, 4, H, W]
+        type_probs = self.type_head(self.encoder_type(x))             # [B, 7, H, W]
+
+        return decision_probs, dir_probs, type_probs
+
 
 
 def sync_target_heads(policy_heads, target_heads):
@@ -575,11 +588,10 @@ class Agent:
         """
         action_type_mask = structured_masks["action_type"]
 
-        attack_decision = attack_decision.argmax(dim=1)
-        harvest_decision = harvest_decision.argmax(dim=1)
-        return_decision = return_decision.argmax(dim=1)
-        produce_decision = produce_decision.argmax(dim=1)
-        move_decision = move_decision.argmax(dim=1)
+
+        
+
+
 
         E, H, W = attack_decision.shape
         action_type_grid = np.zeros((E, H, W), dtype=np.int32)
@@ -589,9 +601,18 @@ class Agent:
                 for k in range(W):
                     valid_types = action_type_mask[i, :, j, k].cpu().numpy()
 
+                    produce_decision[i,j,k]=1
+                    attack_decision[i, j, k]=1
+                    harvest_decision[i, j, k]=1
+                    return_decision[i, j, k]=1
+                    move_decision[i, j, k]=1
+                    print(i,j,k)
+                    print("valid types,", valid_types)
+                    action_type_grid[i, j, k] = 1
+
                     if len(valid_types) != 6:
                         raise ValueError(f"Ungültige Länge der Masken: {len(valid_types)} an Pos. [{i},{j},{k}]")
-
+                    """
                     if valid_types[5] and attack_decision[i, j, k] == 1:
                         action_type_grid[i, j, k] = 5
                     elif valid_types[2] and harvest_decision[i, j, k] == 1:
@@ -602,8 +623,26 @@ class Agent:
                         action_type_grid[i, j, k] = 4
                     elif valid_types[1] and move_decision[i, j, k] == 1:
                         action_type_grid[i, j, k] = 1
+                    """
+                    if valid_types[5]  == 1:
+                        action_type_grid[i, j, k] = 5
+                    elif valid_types[2]  == 1:
+                        action_type_grid[i, j, k] = 2
+                    elif valid_types[3]  == 1:
+                        action_type_grid[i, j, k] = 3
+                    elif valid_types[4]  == 1:
+                        action_type_grid[i, j, k] = 4
+                    elif valid_types[1]  == 1:
+                        action_type_grid[i, j, k] = 1
+
+                    action_type_grid[i, j, k] = 4
+                    """
                     elif valid_types[0]:
                         action_type_grid[i, j, k] = 0
+                    """
+        if action_type_grid[i, j, k] == 0:
+            print(f"Keine Aktion gewählt bei [{i},{j},{k}], obwohl Masken: {valid_types}")
+
 
         return action_type_grid
 
@@ -658,11 +697,11 @@ class Agent:
 
         # Führe Teilaktion zur Gesamtaktion zusammen
         action_type_grid = self.get_action_type_grid(masks,
-                                                     attack_decision,
-                                                     harvest_decision,
-                                                     return_decision,
-                                                     produce_decision,
-                                                     move_decision)
+                                                     attack_mask,
+                                                     harvest_mask,
+                                                     return_mask,
+                                                     produce_mask,
+                                                     move_mask)
         action_taken_grid = action_type_grid
 
         """
@@ -697,12 +736,7 @@ class Agent:
             ))
         """
 
-        self.state = new_state
-        if np.any(is_done):
-            done_reward = self.total_reward
-            self._reset()
-            return done_reward
-        return None
+
 
     @torch.no_grad()
     def play_step(self, epsilon=0.0, device="cpu"):
@@ -805,11 +839,11 @@ class Agent:
 
             # Führe Teilaktion zur Gesamtaktion zusammen
             action_type_grid = self.get_action_type_grid(masks,
-                                                         attack_decision,
-                                                         harvest_decision,
-                                                         return_decision,
-                                                         produce_decision,
-                                                         move_decision)
+                                                         attack_mask,
+                                                         harvest_mask,
+                                                         return_mask,
+                                                         produce_mask,
+                                                         move_mask)
             action_taken_grid = action_type_grid
 
 
