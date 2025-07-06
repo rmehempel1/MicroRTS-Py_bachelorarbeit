@@ -1085,6 +1085,8 @@ if __name__ == "__main__":
 
     target_heads = {name: head for name, head in agent.heads.items()}  # Zielnetz initialisieren
     sync_target_heads(agent.heads, target_heads)  # Direkt synchronisieren
+    for name, head in agent.heads.items():
+        torch.save(head.state_dict(), os.path.join(model_dir, f"{args.exp_name}_{name}_initial.pth"))
 
     while frame_idx < args.total_timesteps:
         frame_idx += 1
@@ -1138,8 +1140,8 @@ if __name__ == "__main__":
             for name, head in agent.heads.items():
                 torch.save(head.state_dict(), os.path.join(model_dir,f"{args.exp_name}_{name}_{frame_idx}.pth"))
 
-
-
+    for name, head in agent.heads.items():
+        torch.save(head.state_dict(), os.path.join(model_dir, f"{args.exp_name}_{name}_ende.pth"))
     print("Training abgeschlossen.")
 
     envs.close()
