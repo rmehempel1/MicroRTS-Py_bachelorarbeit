@@ -751,8 +751,7 @@ class Agent:
             action = action.reshape(self.env.num_envs, -1)
         else:
             # Zustand vorbereiten für Netzwerkeingabe
-            state_a = np.array(self.state, copy=False)
-            state_v = torch.tensor(self.state_a, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
+            state_v = torch.tensor(self.state, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
 
             """Jeder Kopf muss alle seine maximal Möglichen Aktionen machen, diese einzeln. Die beste Aktion an Merge 
             schicken, welcher die Gesamtaktion ausführt
