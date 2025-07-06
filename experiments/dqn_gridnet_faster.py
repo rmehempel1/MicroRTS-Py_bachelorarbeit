@@ -840,7 +840,7 @@ class Agent:
         states, actions, action_taken_grid, rewards, dones, next_states = batch
         device = self.device
 
-        # Tensor-Konvertierung
+        # Tensor-Konvertierung und Formatierung
         states_t = torch.tensor(states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
         next_states_t = torch.tensor(next_states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
         rewards_t = torch.tensor(rewards, dtype=torch.float32, device=device).view(-1, 1, 1)
@@ -848,14 +848,12 @@ class Agent:
         actions = torch.tensor(actions, dtype=torch.long, device=device)
         action_taken_grid = torch.tensor(np.array(action_taken_grid), dtype=torch.long, device=device)
 
-        B, H, W = action_taken_grid.shape
-
         q_preds, q_tgts = [], []
 
         for name, head in self.heads.items():
             cfg = self.head_config[name]
             type_id = cfg["type_id"]
-            mask = (action_taken_grid == type_id)  # [B, H, W]
+            mask = (action_taken_grid == type_id)
 
             if not mask.any():
                 continue
@@ -863,38 +861,44 @@ class Agent:
             out = head(states_t)
             tgt = target_heads[name](next_states_t)
 
-
-
             if name == "produce":
                 dir_idx, type_idx = cfg["indices"][1], cfg["indices"][2]
+
                 act_dirs = actions[:, :, :, dir_idx]
                 act_types = actions[:, :, :, type_idx]
+                act_dec = (action_taken_grid == 4).long()
 
-                # Q-Wert für gewählte Parameter (nur wo type_id passt)
-                q_dir = out[1].gather(1, act_dirs.unsqueeze(1)).squeeze(1)  # [B, H, W]
+                q_dir = out[1].gather(1, act_dirs.unsqueeze(1)).squeeze(1)
+                q_dec = out[0].gather(1, act_dec.unsqueeze(1)).squeeze(1)
                 q_type = out[2].gather(1, act_types.unsqueeze(1)).squeeze(1)
 
-                tgt_dir = tgt[1].max(1).values  # [B, H, W]
+                tgt_dec = tgt[0].max(1).values
+                tgt_dir = tgt[1].max(1).values
                 tgt_type = tgt[2].max(1).values
 
-                q_preds.append(q_dir[mask])
-                q_preds.append(q_type[mask])
-
-                q_tgts.append(rewards_t.expand_as(tgt_dir)[mask] + gamma * tgt_dir[mask] * (
-                        1.0 - dones_t.expand_as(tgt_dir)[mask]))
-                q_tgts.append(rewards_t.expand_as(tgt_type)[mask] + gamma * tgt_type[mask] * (
-                        1.0 - dones_t.expand_as(tgt_type)[mask]))
+                q_preds += [q_dec[mask], q_dir[mask], q_type[mask]]
+                q_tgts += [
+                    (rewards_t.expand_as(tgt_dec) + gamma * tgt_dec * (1.0 - dones_t.expand_as(tgt_dec)))[mask],
+                    (rewards_t.expand_as(tgt_dir) + gamma * tgt_dir * (1.0 - dones_t.expand_as(tgt_dir)))[mask],
+                    (rewards_t.expand_as(tgt_type) + gamma * tgt_type * (1.0 - dones_t.expand_as(tgt_type)))[mask],
+                ]
 
             else:
                 param_idx = cfg["indices"][1]
                 act_param = actions[:, :, :, param_idx]
+                act_dec = (action_taken_grid == cfg["indices"][0]).long()
 
+                q_dec = out[0].gather(1, act_dec.unsqueeze(1)).squeeze(1)
                 q = out[1].gather(1, act_param.unsqueeze(1)).squeeze(1)
+
+                tgt_q_dec = tgt[0].max(1).values
                 tgt_q = tgt[1].max(1).values
 
-                q_preds.append(q[mask])
-                q_tgts.append(
-                    rewards_t.expand_as(tgt_q)[mask] + gamma * tgt_q[mask] * (1.0 - dones_t.expand_as(tgt_q)[mask]))
+                q_preds += [q_dec[mask], q[mask]]
+                q_tgts += [
+                    (rewards_t.expand_as(tgt_q_dec) + gamma * tgt_q_dec * (1.0 - dones_t.expand_as(tgt_q_dec)))[mask],
+                    (rewards_t.expand_as(tgt_q) + gamma * tgt_q * (1.0 - dones_t.expand_as(tgt_q)))[mask],
+                ]
 
         if q_preds and q_tgts:
             q_preds_t = torch.cat(q_preds)
@@ -902,6 +906,7 @@ class Agent:
             return F.mse_loss(q_preds_t, q_tgts_t)
         else:
             return torch.tensor(0.0, device=device)
+
 
 """
 Observation shape:  ([24, 8, 8, 29]) #[num_env, H,W, C]
