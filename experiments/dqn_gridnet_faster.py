@@ -560,26 +560,36 @@ class Agent:
             "attack_dir": reshape_and_convert(raw_masks[:, :, 29:78], 49),
         }
 
-    def get_action_type_grid(self,  structured_masks,
+    def get_action_type_grid(self, structured_masks,
                              attack_decision,
                              harvest_decision,
                              return_decision,
                              produce_decision,
                              move_decision):
         """
-        Priorisierte Auswahl der Action Types basierend auf gültigen Masken
+        Priorisierte Auswahl der Action Types basierend auf gültigen Masken.
         1: move, 2: harvest, 3: return, 4: produce, 5: attack
         Default ist 0 (no-op)
         """
         action_type_mask = structured_masks["action_type"]
+
+        attack_decision = attack_decision.argmax(dim=1)
+        harvest_decision = harvest_decision.argmax(dim=1)
+        return_decision = return_decision.argmax(dim=1)
+        produce_decision = produce_decision.argmax(dim=1)
+        move_decision = move_decision.argmax(dim=1)
+
         E, H, W = attack_decision.shape
-        action_type_grid = np.zeros((E, H, W), dtype=np.int32)  # 0 = no-op
+        action_type_grid = np.zeros((E, H, W), dtype=np.int32)
 
         for i in range(E):
             for j in range(H):
                 for k in range(W):
-                    # action_type_mask: [E, 6, H, W] → [E, H, W, 6]
                     valid_types = action_type_mask[i, :, j, k].cpu().numpy()
+
+                    if len(valid_types) != 6:
+                        raise ValueError(f"Ungültige Länge der Masken: {len(valid_types)} an Pos. [{i},{j},{k}]")
+
                     if valid_types[5] and attack_decision[i, j, k] == 1:
                         action_type_grid[i, j, k] = 5
                     elif valid_types[2] and harvest_decision[i, j, k] == 1:
@@ -591,7 +601,7 @@ class Agent:
                     elif valid_types[1] and move_decision[i, j, k] == 1:
                         action_type_grid[i, j, k] = 1
                     elif valid_types[0]:
-                        action_type_grid[i, j, k] = 0  # fallback to no-op if nothing else möglich
+                        action_type_grid[i, j, k] = 0
 
         return action_type_grid
 
@@ -799,6 +809,7 @@ class Agent:
                                                          return_decision,
                                                          produce_decision,
                                                          move_decision)
+            action_taken_grid = action_type_grid
 
 
             """
