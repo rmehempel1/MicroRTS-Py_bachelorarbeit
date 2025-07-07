@@ -849,6 +849,10 @@ class Agent:
                         action[env_i, i, j, 6] = sample_valid(cell_mask[29:78])
 
             action = action.reshape(self.env.num_envs, -1)
+            # Führe Aktion aus
+            torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
+            new_state, reward, is_done, _ = self.env.step(action)
+            self.total_reward += reward
         else:
             # Zustand vorbereiten für Netzwerkeingabe
             full_mask = self.env.venv.venv.get_action_mask()
@@ -968,9 +972,7 @@ class Agent:
             # print("doppelcheck", action.shape)
 
             # Führe Aktion aus
-
             torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
-
             new_state, reward, is_done, _ = self.env.step(action)
             self.total_reward += reward
 
