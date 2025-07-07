@@ -1226,9 +1226,10 @@ if __name__ == "__main__":
     os.makedirs(model_dir, exist_ok=True)
     log_dir=f"./{args.exp_name}/csv/"
     os.makedirs(log_dir, exist_ok=True)
-    print("Starte Training")
-    start_time = time.time()
 
+    print("Starte Training")
+
+    start_time = time.time()
     target_heads = {name: head for name, head in agent.heads.items()}  # Zielnetz initialisieren
     sync_target_heads(agent.heads, target_heads)  # Direkt synchronisieren
     for name, head in agent.heads.items():
@@ -1282,7 +1283,7 @@ if __name__ == "__main__":
             print("frame index:", frame_idx)
             print("Loss:", loss)
 
-        if frame_idx % 250000 == 0:
+        if frame_idx % 100000 == 0:
             for name, head in agent.heads.items():
                 torch.save(head.state_dict(), os.path.join(model_dir,f"{args.exp_name}_{name}_{frame_idx}.pth"))
 
