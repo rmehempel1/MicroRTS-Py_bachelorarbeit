@@ -425,56 +425,6 @@ def sync_target_heads(policy_heads, target_heads):
         target_heads[name].load_state_dict(params)
 
 
-def merge_actions(
-        action_type_grid,  # (E, H, W) – Priorisierte Aktionsauswahl
-        attack_params=None,  # (H, W, 2)
-        harvest_mask=None,  # (H, W) – bool
-        return_mask=None,  # (H, W) – bool
-        produce_params=None,  # (H, W, 1)
-        produce_type=None,
-        move_params=None  # (H, W, 1)
-):
-    """
-    Erstellt einen flachen Aktionsvektor aus den Einzel-Head-Ausgaben.
-    action_type_ bestimmt, welche Aktion pro Grid aktiv ist.
-    Die restlichen Parameter werden gesetzt, wenn die Aktion aktiv ist.
-    Format: 7 Einträge pro Zelle, wie in MicroRTS erwartet.
-    """
-
-    E, H, W = action_type_grid.shape
-    full_action = np.zeros((E, H, W, 7), dtype=np.int32)
-    # print("produce_params.shape:", produce_params.shape)
-    for i in range(E):
-        for j in range(H):
-            for k in range(W):
-                a_type = action_type_grid[i, j, k]  # holt sich den action type
-                full_action[i, j, k, 0] = a_type  # action type eintragen
-
-                # Aktion ausführen, andere Parameterfelder auf 0
-                if a_type == 5 and attack_params is not None:  # action_type=5 -> Attack
-                    # print("attack_params.shape:", attack_params.shape)
-                    # print("Beispielwert:", attack_params[i, j, k])
-                    full_action[i, j, k, 6] = attack_params[i, j, k]
-                    # print("Attack")
-
-                elif a_type == 2 and harvest_mask is not None:
-                    full_action[i, j, k, 2] = harvest_mask[i, j, k]
-                    # print("Harvest")
-
-                elif a_type == 3 and return_mask is not None:
-                    full_action[i, j, k, 3] = return_mask[i, j, k]
-                    # print("retuern")
-
-                elif a_type == 4 and produce_params is not None and produce_type is not None:
-                    full_action[i, j, k, 4] = produce_params[i, j, k]
-                    # full_action[i, j, k, 5] = produce_type[i, j, k]
-                    #print("Produce")
-
-                elif a_type == 1 and move_params is not None:
-                    full_action[i, j, k, 1] = move_params[i, j, k]
-                # print("move")
-
-    return full_action.reshape(E, H * W * 7)
 
 
 class Agent:
@@ -606,13 +556,13 @@ class Agent:
                     harvest_decision[i, j, k]=1
                     return_decision[i, j, k]=1
                     move_decision[i, j, k]=1
-                    print(i,j,k)
-                    print("valid types,", valid_types)
+                    #print(i,j,k)
+                    #print("valid types,", valid_types)
                     action_type_grid[i, j, k] = 1
 
                     if len(valid_types) != 6:
                         raise ValueError(f"Ungültige Länge der Masken: {len(valid_types)} an Pos. [{i},{j},{k}]")
-                    """
+
                     if valid_types[5] and attack_decision[i, j, k] == 1:
                         action_type_grid[i, j, k] = 5
                     elif valid_types[2] and harvest_decision[i, j, k] == 1:
@@ -623,28 +573,77 @@ class Agent:
                         action_type_grid[i, j, k] = 4
                     elif valid_types[1] and move_decision[i, j, k] == 1:
                         action_type_grid[i, j, k] = 1
-                    """
-                    if valid_types[5]  == 1:
-                        action_type_grid[i, j, k] = 5
-                    elif valid_types[2]  == 1:
-                        action_type_grid[i, j, k] = 2
-                    elif valid_types[3]  == 1:
-                        action_type_grid[i, j, k] = 3
-                    elif valid_types[4]  == 1:
-                        action_type_grid[i, j, k] = 4
-                    elif valid_types[1]  == 1:
-                        action_type_grid[i, j, k] = 1
+                    #print("action_type_grid", action_type_grid[i,j,k])
 
-                    action_type_grid[i, j, k] = 4
+
                     """
                     elif valid_types[0]:
                         action_type_grid[i, j, k] = 0
                     """
-        if action_type_grid[i, j, k] == 0:
-            print(f"Keine Aktion gewählt bei [{i},{j},{k}], obwohl Masken: {valid_types}")
+
 
 
         return action_type_grid
+
+    def merge_actions(self,
+            action_type_grid,  # (E, H, W) – Priorisierte Aktionsauswahl
+            attack_params=None,  # (H, W, 2)
+            harvest_mask=None,  # (H, W) – bool
+            return_mask=None,  # (H, W) – bool
+            produce_params=None,  # (H, W, 1)
+            produce_type=None,
+            move_params=None  # (H, W, 1)
+    ):
+        """
+        Erstellt einen flachen Aktionsvektor aus den Einzel-Head-Ausgaben.
+        action_type_ bestimmt, welche Aktion pro Grid aktiv ist.
+        Die restlichen Parameter werden gesetzt, wenn die Aktion aktiv ist.
+        Format: 7 Einträge pro Zelle, wie in MicroRTS erwartet.
+        """
+        #print("action_type_grid", action_type_grid.shape)
+        E, H, W = action_type_grid.shape
+        #print("E:", E)
+        full_action = np.zeros((E, H, W, 7), dtype=np.int32)
+        # print("produce_params.shape:", produce_params.shape)
+        for i in range(E):
+            for j in range(H):
+                for k in range(W):
+                    a_type = action_type_grid[i, j, k]  # holt sich den action type
+                    #print(f"Pos [{i},{j},{k}] a_type={a_type}")
+                    full_action[i, j, k, 0] = a_type  # action type eintragen
+
+                    # Aktion ausführen, andere Parameterfelder auf 0
+                    if a_type == 5:  # action_type=5 -> Attack
+                        # print("attack_params.shape:", attack_params.shape)
+                        # print("Beispielwert:", attack_params[i, j, k])
+                        full_action[i, j, k, 6] = attack_params[i, j, k]
+                        # print("Attack")
+
+                    elif a_type == 2:
+                        full_action[i, j, k, 2] = harvest_mask[i, j, k]
+                        # print("Harvest")
+
+                    elif a_type == 3:
+                        full_action[i, j, k, 3] = return_mask[i, j, k]
+                        # print("retuern")
+
+                    elif a_type == 4:
+                        #print(produce_params.dtype, produce_params.shape)
+                        #print("produce_params, produce_type, shape", produce_params.shape, produce_type.shape)
+                        #print("produce_params, produce_type", produce_params[i, j, k], produce_type[i, j, k])
+                        full_action[i, j, k, 4] = produce_params[i, j, k]
+                        full_action[i, j, k, 5] = produce_type[i, j, k]
+                        # print("Produce")
+
+                    elif a_type == 1 :
+                        full_action[i, j, k, 1] = move_params[i, j, k]
+                    # print("move")
+
+                    #print("full_action", full_action[i, j, k])
+        #print("full_action reshape shape", full_action.reshape(E, H * W * 7))
+        #print("ende Merge action", full_action.reshape(E, H * W * 7))
+        #print("zwischentes")
+        return full_action.reshape(E, H * W * 7)
 
     def _reset(self):
         """
@@ -654,7 +653,9 @@ class Agent:
         self.total_reward = 0.0
 
     @torch.no_grad()
-    def play_eval(self, device="cpu"):
+    def play_eval(self,device="cpu"):
+        #print("state shape", self.state.shape)
+        full_mask = self.env.venv.venv.get_action_mask()
         state_v = torch.tensor(self.state, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
 
         """Jeder Kopf muss alle seine maximal Möglichen Aktionen machen, diese einzeln. Die beste Aktion an Merge 
@@ -662,38 +663,83 @@ class Agent:
         """
         # Berechne strukturierte Aktionsmasken
         masks = self._get_structured_action_masks(self.state, device=self.device)
+        #print("state_v shaoe", state_v.shape)
 
         # Attack
-        attack_decision, attack_dir = self.attack_head(state_v)
-        attack_mask = attack_decision.argmax(dim=1).cpu().numpy()
-        attack_dir = attack_dir.masked_fill(masks["attack_dir"] == 0, -1e8)
-        attack_param = attack_dir.argmax(dim=1).cpu().numpy()
+        attack_dec = self.attack_head.encoder_decision(state_v)
+        attack_decision_logits = self.attack_head.decision_head[0](attack_dec)
+        attack_allowed_mask = masks["action_type"][:, 5]  # [B, H, W]
+        attack_decision_logits[:, 1] = attack_decision_logits[:, 1].masked_fill(attack_allowed_mask == 0, float("-inf"))
+        attack_mask = attack_decision_logits.argmax(dim=1).cpu().numpy()
+
+        att_dir = self.attack_head.encoder_target(state_v)
+        attack_dir_logits = self.attack_head.target_head[0](att_dir)
+        attack_dir_masked = attack_dir_logits.masked_fill(masks["attack_dir"] == 0, float("-inf"))
+        attack_param = attack_dir_masked.argmax(dim=1).cpu().numpy()
 
         # Move
-        move_decision, move_dir = self.movement_head(state_v)
-        move_mask = move_decision.argmax(dim=1).cpu().numpy()
-        move_dir = move_dir.masked_fill(masks["move_dir"] == 0, -1e8)
-        move_param = move_dir.argmax(dim=1).cpu().numpy()
+        # Entscheidung
+        move_dec = self.movement_head.encoder_decision(state_v)
+        move_decision_logits = self.movement_head.decision_head[0](move_dec)
+        move_allowed_mask = masks["action_type"][:, 1]  # move erlaubt?
+        move_decision_logits[:, 1] = move_decision_logits[:, 1].masked_fill(move_allowed_mask == 0, float("-inf"))
+        move_mask = move_decision_logits.argmax(dim=1).cpu().numpy()
+
+        # Richtung
+        move_dir = self.movement_head.encoder_dir(state_v)
+        move_dir_logits = self.movement_head.dir_head[0](move_dir)
+        move_dir_masked = move_dir_logits.masked_fill(masks["move_dir"] == 0, float("-inf"))
+        move_param = move_dir_masked.argmax(dim=1).cpu().numpy()
 
         # Harvest
-        harvest_decision, harvest_dir = self.harvest_head(state_v)
-        harvest_mask = harvest_decision.argmax(dim=1).cpu().numpy()
-        harvest_dir = harvest_dir.masked_fill(masks["harvest_dir"] == 0, -1e8)
-        harvest_param = harvest_dir.argmax(dim=1).cpu().numpy()
+        # Entscheidung
+        harv_dec = self.harvest_head.encoder_decision(state_v)
+        harvest_decision_logits = self.harvest_head.decision_head[0](harv_dec)
+        harvest_allowed_mask = masks["action_type"][:, 2]  # Index 2 = harvest
+        harvest_decision_logits[:, 1] = harvest_decision_logits[:, 1].masked_fill(harvest_allowed_mask == 0,
+                                                                                  float("-inf"))
+        harvest_mask = harvest_decision_logits.argmax(dim=1).cpu().numpy()
+
+        # Richtung
+        harv_dir = self.harvest_head.encoder_dir(state_v)
+        harvest_dir_logits = self.harvest_head.dir_head[0](harv_dir)
+        harvest_dir_masked = harvest_dir_logits.masked_fill(masks["harvest_dir"] == 0, float("-inf"))
+        harvest_param = harvest_dir_masked.argmax(dim=1).cpu().numpy()
 
         # Return
-        return_decision, return_dir = self.return_head(state_v)
-        return_mask = return_decision.argmax(dim=1).cpu().numpy()
-        return_dir = return_dir.masked_fill(masks["return_dir"] == 0, -1e8)
-        return_param = return_dir.argmax(dim=1).cpu().numpy()
+        # Entscheidung
+        ret_dec = self.return_head.encoder_decision(state_v)
+        return_decision_logits = self.return_head.decision_head[0](ret_dec)
+        return_allowed_mask = masks["action_type"][:, 3]
+        return_decision_logits[:, 1] = return_decision_logits[:, 1].masked_fill(return_allowed_mask == 0, float("-inf"))
+        return_mask = return_decision_logits.argmax(dim=1).cpu().numpy()
+
+        # Richtung
+        ret_dir = self.return_head.encoder_dir(state_v)
+        return_dir_logits = self.return_head.dir_head[0](ret_dir)
+        return_dir_masked = return_dir_logits.masked_fill(masks["return_dir"] == 0, float("-inf"))
+        return_param = return_dir_masked.argmax(dim=1).cpu().numpy()
 
         # Produce
-        produce_decision, produce_dir, produce_type = self.produce_head(state_v)
-        produce_mask = produce_decision.argmax(dim=1).cpu().numpy()
-        produce_dir = produce_dir.masked_fill(masks["produce_dir"] == 0, -1e8)
-        produce_type = produce_type.masked_fill(masks["produce_type"] == 0, -1e8)
-        produce_param = produce_dir.argmax(dim=1).cpu().numpy()
-        produce_type = produce_type.argmax(dim=1).cpu().numpy()
+        # Entscheidung
+        prod_dec = self.produce_head.encoder_decision(state_v)
+        produce_decision_logits = self.produce_head.decision_head[0](prod_dec)
+        produce_allowed_mask = masks["action_type"][:, 4]
+        produce_decision_logits[:, 1] = produce_decision_logits[:, 1].masked_fill(produce_allowed_mask == 0,
+                                                                                  float("-inf"))
+        produce_mask = produce_decision_logits.argmax(dim=1).cpu().numpy()
+
+        # Richtung
+        prod_dir = self.produce_head.encoder_dir(state_v)
+        produce_dir_logits = self.produce_head.dir_head[0](prod_dir)
+        produce_dir_masked = produce_dir_logits.masked_fill(masks["produce_dir"] == 0, float("-inf"))
+        produce_param = produce_dir_masked.argmax(dim=1).cpu().numpy()
+
+        # Typ
+        prod_type = self.produce_head.encoder_type(state_v)
+        produce_type_logits = self.produce_head.type_head[0](prod_type)
+        produce_type_masked = produce_type_logits.masked_fill(masks["produce_type"] == 0, float("-inf"))
+        produce_type = produce_type_masked.argmax(dim=1).cpu().numpy()
 
         # Führe Teilaktion zur Gesamtaktion zusammen
         action_type_grid = self.get_action_type_grid(masks,
@@ -710,9 +756,17 @@ class Agent:
         print("move_mask.shape:", move_mask.shape)
         print("state_v.shape:", state_v.shape)
         """
-
-        action = merge_actions(action_type_grid, attack_param, harvest_param, return_param, produce_type,
-                               produce_param, move_param)
+        #print("vor merge",action_type_grid.shape, attack_dec.shape)
+        action = self.merge_actions(
+            action_type_grid,
+            attack_param,
+            harvest_param,
+            return_param,
+            produce_param,  # zuerst!
+            produce_type,  # danach!
+            move_param
+        )
+        #print("play eval aktion:", action)
         # print("doppelcheck", action.shape)
 
         # Führe Aktion aus
@@ -760,7 +814,7 @@ class Agent:
         - Rückgabe: Gesamt-Reward bei Episodenende, sonst None
         """
         done_reward = None
-
+        full_mask = self.env.venv.venv.get_action_mask()
         # ε-greedy Aktionsauswahl
         if np.random.random() < epsilon:
             raw_masks = self.env.venv.venv.get_action_mask()  # [num_envs, H*W, 78]
@@ -797,6 +851,7 @@ class Agent:
             action = action.reshape(self.env.num_envs, -1)
         else:
             # Zustand vorbereiten für Netzwerkeingabe
+            full_mask = self.env.venv.venv.get_action_mask()
             state_v = torch.tensor(self.state, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
 
             """Jeder Kopf muss alle seine maximal Möglichen Aktionen machen, diese einzeln. Die beste Aktion an Merge 
@@ -804,38 +859,85 @@ class Agent:
             """
             # Berechne strukturierte Aktionsmasken
             masks = self._get_structured_action_masks(self.state, device=self.device)
+            # print("state_v shaoe", state_v.shape)
 
             # Attack
-            attack_decision, attack_dir = self.attack_head(state_v)
-            attack_mask = attack_decision.argmax(dim=1).cpu().numpy()
-            attack_dir = attack_dir.masked_fill(masks["attack_dir"] == 0, -1e8)
-            attack_param = attack_dir.argmax(dim=1).cpu().numpy()
+            attack_dec = self.attack_head.encoder_decision(state_v)
+            attack_decision_logits = self.attack_head.decision_head[0](attack_dec)
+            attack_allowed_mask = masks["action_type"][:, 5]  # [B, H, W]
+            attack_decision_logits[:, 1] = attack_decision_logits[:, 1].masked_fill(attack_allowed_mask == 0,
+                                                                                    float("-inf"))
+            attack_mask = attack_decision_logits.argmax(dim=1).cpu().numpy()
+
+            att_dir = self.attack_head.encoder_target(state_v)
+            attack_dir_logits = self.attack_head.target_head[0](att_dir)
+            attack_dir_masked = attack_dir_logits.masked_fill(masks["attack_dir"] == 0, float("-inf"))
+            attack_param = attack_dir_masked.argmax(dim=1).cpu().numpy()
 
             # Move
-            move_decision, move_dir = self.movement_head(state_v)
-            move_mask = move_decision.argmax(dim=1).cpu().numpy()
-            move_dir = move_dir.masked_fill(masks["move_dir"] == 0, -1e8)
-            move_param = move_dir.argmax(dim=1).cpu().numpy()
+            # Entscheidung
+            move_dec = self.movement_head.encoder_decision(state_v)
+            move_decision_logits = self.movement_head.decision_head[0](move_dec)
+            move_allowed_mask = masks["action_type"][:, 1]  # move erlaubt?
+            move_decision_logits[:, 1] = move_decision_logits[:, 1].masked_fill(move_allowed_mask == 0, float("-inf"))
+            move_mask = move_decision_logits.argmax(dim=1).cpu().numpy()
+
+            # Richtung
+            move_dir = self.movement_head.encoder_dir(state_v)
+            move_dir_logits = self.movement_head.dir_head[0](move_dir)
+            move_dir_masked = move_dir_logits.masked_fill(masks["move_dir"] == 0, float("-inf"))
+            move_param = move_dir_masked.argmax(dim=1).cpu().numpy()
 
             # Harvest
-            harvest_decision, harvest_dir = self.harvest_head(state_v)
-            harvest_mask = harvest_decision.argmax(dim=1).cpu().numpy()
-            harvest_dir = harvest_dir.masked_fill(masks["harvest_dir"] == 0, -1e8)
-            harvest_param = harvest_dir.argmax(dim=1).cpu().numpy()
+            # Entscheidung
+            harv_dec = self.harvest_head.encoder_decision(state_v)
+            harvest_decision_logits = self.harvest_head.decision_head[0](harv_dec)
+            harvest_allowed_mask = masks["action_type"][:, 2]  # Index 2 = harvest
+            harvest_decision_logits[:, 1] = harvest_decision_logits[:, 1].masked_fill(harvest_allowed_mask == 0,
+                                                                                      float("-inf"))
+            harvest_mask = harvest_decision_logits.argmax(dim=1).cpu().numpy()
+
+            # Richtung
+            harv_dir = self.harvest_head.encoder_dir(state_v)
+            harvest_dir_logits = self.harvest_head.dir_head[0](harv_dir)
+            harvest_dir_masked = harvest_dir_logits.masked_fill(masks["harvest_dir"] == 0, float("-inf"))
+            harvest_param = harvest_dir_masked.argmax(dim=1).cpu().numpy()
 
             # Return
-            return_decision, return_dir = self.return_head(state_v)
-            return_mask = return_decision.argmax(dim=1).cpu().numpy()
-            return_dir = return_dir.masked_fill(masks["return_dir"] == 0, -1e8)
-            return_param = return_dir.argmax(dim=1).cpu().numpy()
+            # Entscheidung
+            ret_dec = self.return_head.encoder_decision(state_v)
+            return_decision_logits = self.return_head.decision_head[0](ret_dec)
+            return_allowed_mask = masks["action_type"][:, 3]
+            return_decision_logits[:, 1] = return_decision_logits[:, 1].masked_fill(return_allowed_mask == 0,
+                                                                                    float("-inf"))
+            return_mask = return_decision_logits.argmax(dim=1).cpu().numpy()
+
+            # Richtung
+            ret_dir = self.return_head.encoder_dir(state_v)
+            return_dir_logits = self.return_head.dir_head[0](ret_dir)
+            return_dir_masked = return_dir_logits.masked_fill(masks["return_dir"] == 0, float("-inf"))
+            return_param = return_dir_masked.argmax(dim=1).cpu().numpy()
 
             # Produce
-            produce_decision, produce_dir, produce_type = self.produce_head(state_v)
-            produce_mask = produce_decision.argmax(dim=1).cpu().numpy()
-            produce_dir = produce_dir.masked_fill(masks["produce_dir"] == 0, -1e8)
-            produce_type = produce_type.masked_fill(masks["produce_type"] == 0, -1e8)
-            produce_param = produce_dir.argmax(dim=1).cpu().numpy()
-            produce_type = produce_type.argmax(dim=1).cpu().numpy()
+            # Entscheidung
+            prod_dec = self.produce_head.encoder_decision(state_v)
+            produce_decision_logits = self.produce_head.decision_head[0](prod_dec)
+            produce_allowed_mask = masks["action_type"][:, 4]
+            produce_decision_logits[:, 1] = produce_decision_logits[:, 1].masked_fill(produce_allowed_mask == 0,
+                                                                                      float("-inf"))
+            produce_mask = produce_decision_logits.argmax(dim=1).cpu().numpy()
+
+            # Richtung
+            prod_dir = self.produce_head.encoder_dir(state_v)
+            produce_dir_logits = self.produce_head.dir_head[0](prod_dir)
+            produce_dir_masked = produce_dir_logits.masked_fill(masks["produce_dir"] == 0, float("-inf"))
+            produce_param = produce_dir_masked.argmax(dim=1).cpu().numpy()
+
+            # Typ
+            prod_type = self.produce_head.encoder_type(state_v)
+            produce_type_logits = self.produce_head.type_head[0](prod_type)
+            produce_type_masked = produce_type_logits.masked_fill(masks["produce_type"] == 0, float("-inf"))
+            produce_type = produce_type_masked.argmax(dim=1).cpu().numpy()
 
             # Führe Teilaktion zur Gesamtaktion zusammen
             action_type_grid = self.get_action_type_grid(masks,
@@ -846,22 +948,31 @@ class Agent:
                                                          move_mask)
             action_taken_grid = action_type_grid
 
-
             """
 
             print("attack_mask.shape:", attack_mask.shape)
             print("move_mask.shape:", move_mask.shape)
             print("state_v.shape:", state_v.shape)
             """
-
-            action = merge_actions(action_type_grid, attack_param, harvest_param, return_param, produce_type,
-                                   produce_param, move_param)
+            # print("vor merge",action_type_grid.shape, attack_dec.shape)
+            action = self.merge_actions(
+                action_type_grid,
+                attack_param,
+                harvest_param,
+                return_param,
+                produce_param,  # zuerst!
+                produce_type,  # danach!
+                move_param
+            )
+            # print("play eval aktion:", action)
             # print("doppelcheck", action.shape)
 
             # Führe Aktion aus
-        torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
-        new_state, reward, is_done, _ = self.env.step(action)
-        self.total_reward += reward
+
+            torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
+
+            new_state, reward, is_done, _ = self.env.step(action)
+            self.total_reward += reward
 
         # print("action.shape before storing:", action.shape)
 
@@ -1005,7 +1116,8 @@ if __name__ == "__main__":
         render_theme=2,
         ai2s=[microrts_ai.passiveAI for _ in range(args.num_bot_envs)],
         map_paths=[args.train_maps[0]],
-        reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0]),
+        reward_weight=np.array([10.0, 1.0, 5.0, 5.0, 1.0, 5.0]),
+        # Win, Ressource, ProduceWorker, Produce Building, Attack, ProduceCombat Unit, (auskommentiert closer to enemy base)
         cycle_maps=args.train_maps,
     )
     envs = MicroRTSStatsRecorder(envs, args.gamma)
