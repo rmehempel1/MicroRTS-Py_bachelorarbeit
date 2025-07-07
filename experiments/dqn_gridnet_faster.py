@@ -1118,7 +1118,7 @@ if __name__ == "__main__":
         render_theme=2,
         ai2s=[microrts_ai.passiveAI for _ in range(args.num_bot_envs)],
         map_paths=[args.train_maps[0]],
-        reward_weight=np.array([10.0, 1.0, 5.0, 5.0, 1.0, 5.0]),
+        reward_weight=np.array([10.0, 1.0, 8.0, 1.0, 10.0, 1.0]),
         # Win, Ressource, ProduceWorker, Produce Building, Attack, ProduceCombat Unit, (auskommentiert closer to enemy base)
         cycle_maps=args.train_maps,
     )
