@@ -138,7 +138,7 @@ class MicroRTSGridModeVecEnv:
                 ProduceBuildingRewardFunction(),
                 AttackRewardFunction(),
                 ProduceCombatUnitRewardFunction(),
-                # CloserToEnemyBaseRewardFunction(),
+                CloserToEnemyBaseRewardFunction(),
             ]
         )
         self.start_client()
