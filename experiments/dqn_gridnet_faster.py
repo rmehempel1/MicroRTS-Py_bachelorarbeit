@@ -170,17 +170,10 @@ def to_scalar(x):
         print(f"[WARN] to_scalar failed for {x}: {e}")
         return 0.0
 
-def log_metrics_to_csv(log_file, episode, loss, reward, epsilon, sps, start_time):
+def log_metrics_to_csv(log_file, episode, loss, reward, epsilon, sps, start_time, win_rate=None, raw_rewards=None):
     """
     Schreibt Metriken pro Episode in eine CSV-Datei, inklusive der bisherigen Laufzeit.
-
-    :param log_file: Pfad zur CSV-Datei
-    :param episode: Episodennummer
-    :param loss: Durchschnittlicher Loss dieser Episode
-    :param reward: Gesamtreward der Episode
-    :param epsilon: Epsilon-Wert zu dieser Episode
-    :param sps: Schritte pro Sekunde während dieser Episode
-    :param start_time: Startzeitpunkt des Trainings (z. B. time.time() zu Beginn)
+    Optional: win_rate und raw_rewards (z. B. für Reward-Komponenten wie Ressourcen, Angriffe etc.)
     """
     file_exists = os.path.isfile(log_file)
     runtime = time.time() - start_time  # Laufzeit in Sekunden
@@ -188,8 +181,21 @@ def log_metrics_to_csv(log_file, episode, loss, reward, epsilon, sps, start_time
     with open(log_file, mode='a', newline='') as file:
         writer = csv.writer(file)
         if not file_exists:
-            writer.writerow(['Episode', 'Loss', 'Reward', 'Epsilon', 'SPS', 'Runtime_sec'])
-        writer.writerow([episode, loss, reward, epsilon, sps, round(runtime, 2)])
+            header = ['Episode', 'Loss', 'Reward', 'Epsilon', 'SPS', 'Runtime_sec']
+            if win_rate is not None:
+                header.append('Win')
+            if raw_rewards is not None:
+                for key in raw_rewards.keys():
+                    header.append(f'reward_{key}')
+            writer.writerow(header)
+
+        row = [episode, loss, reward, epsilon, sps, round(runtime, 2)]
+        if win_rate is not None:
+            row.append(win_rate)
+        if raw_rewards is not None:
+            for val in raw_rewards.values():
+                row.append(val)
+        writer.writerow(row)
 
 def log_training_status(episode_idx, frame_idx, reward, mean_reward, epsilon, start_time):
     reward_val = to_scalar(reward)
@@ -550,12 +556,13 @@ class Agent:
             for j in range(H):
                 for k in range(W):
                     valid_types = action_type_mask[i, :, j, k].cpu().numpy()
-
+                    """
                     produce_decision[i,j,k]=1
                     attack_decision[i, j, k]=1
                     harvest_decision[i, j, k]=1
                     return_decision[i, j, k]=1
                     move_decision[i, j, k]=1
+                    """
                     #print(i,j,k)
                     #print("valid types,", valid_types)
                     action_type_grid[i, j, k] = 1
@@ -973,7 +980,9 @@ class Agent:
 
             # Führe Aktion aus
             torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
-            new_state, reward, is_done, _ = self.env.step(action)
+            new_state, reward, is_done, infos = self.env.step(action)
+            self.env.venv.venv.last_info = infos #fürs logging
+
             self.total_reward += reward
 
         # print("action.shape before storing:", action.shape)
@@ -1114,11 +1123,11 @@ if __name__ == "__main__":
         num_selfplay_envs=args.num_selfplay_envs,
         num_bot_envs=args.num_bot_envs,
         partial_obs=args.partial_obs,
-        max_steps=2000,
+        max_steps=1000,
         render_theme=2,
         ai2s=[microrts_ai.passiveAI for _ in range(args.num_bot_envs)],
         map_paths=[args.train_maps[0]],
-        reward_weight=np.array([10.0, 1.0, 5.0, -5.0, 8.0, -5.0, 3.0]),
+        reward_weight=np.array([30.0, 1.0, 5.0, -5.0, 8.0, -5.0, 3.0]),
         # Win, Ressource, ProduceWorker, Produce Building, Attack, ProduceCombat Unit, (auskommentiert closer to enemy base)
         cycle_maps=args.train_maps,
     )
@@ -1252,6 +1261,12 @@ if __name__ == "__main__":
             reward_queue.append(reward)
 
             mean_reward = np.mean(total_rewards[-100:])
+            #csv
+            # Optional: Sieg aus Info (setzt voraus, dass microrts_stats/PlayerWon im Info-Objekt vorliegt)
+            infos = getattr(envs.venv.venv, "last_info", [{}])[0]
+            win_flag = infos.get("player_won", -1) == 0  # 0 = unser Agent hat gewonnen
+            raw_reward_components = infos.get("microrts_stats", {})  # dictionary mit Reward-Komponenten
+
             log_metrics_to_csv(
                 log_file=os.path.join(log_dir, f"{args.exp_name}.csv"),
                 episode=episode_idx,
@@ -1259,7 +1274,9 @@ if __name__ == "__main__":
                 reward=reward,
                 epsilon=epsilon,
                 sps=frame_idx / (time.time() - start_time),
-                start_time=start_time
+                start_time=start_time,
+                win_rate=int(win_flag),
+                raw_rewards=raw_reward_components
             )
 
             if best_mean_reward is None or best_mean_reward < mean_reward:
