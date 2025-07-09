@@ -1230,23 +1230,9 @@ if __name__ == "__main__":
     """
 
 
-    def set_decision_heads_to_prefer_one(agent):
-        for head in agent.heads.values():
-            if hasattr(head, "decision_head"):
-                with torch.no_grad():
-                    head.decision_head.weight.zero_()
-                    head.decision_head.bias.fill_(0.0)
-                    head.decision_head.bias[1] = 10.0
 
 
-    REWARD_FUNCTION_KEYS = [
-        "WinLossRewardFunction",
-        "ResourceGatherRewardFunction",
-        "ProduceWorkerRewardFunction",
-        "ProduceBuildingRewardFunction",
-        "AttackRewardFunction",
-        "ProduceCombatUnitRewardFunction",
-    ]
+
 
 
 
@@ -1311,9 +1297,20 @@ if __name__ == "__main__":
             episode_idx += 1
             print("Episode", episode_idx)
             print("Reward Done:", reward)   #je nach dem ob done reward oder reward_done
-            stats = infos.get("microrts_stats", {})
-            for k, v in stats.items():
-                print(f"{k}: {v}")
+            reward_names = [
+                "WinLossReward",
+                "ResourceGatherReward",
+                "ProduceWorkerReward",
+                "ProduceBuildingReward",
+                "AttackReward",
+                "ProduceCombatUnitReward"
+            ]
+            raw_rewards = infos.get("raw_rewards", None)
+            if raw_rewards is not None:
+                print("Einzelne Reward-Komponenten:")
+                for name, value in zip(reward_names, raw_rewards):
+                    print(f"{name}: {value}")
+
 
 
         if best_mean_reward is None or best_mean_reward < mean_reward:
