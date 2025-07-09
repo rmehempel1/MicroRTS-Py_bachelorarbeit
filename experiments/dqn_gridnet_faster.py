@@ -1279,6 +1279,7 @@ if __name__ == "__main__":
         "ProduceCombatUnitReward"
     ]
     reward_counts = {name: 0 for name in reward_names}
+    frame_start=0
     print("Starte Training")
 
     start_time = time.time()
@@ -1334,8 +1335,11 @@ if __name__ == "__main__":
         # Logging
         if done:
             episode_idx += 1
+            frame_ende=frame_idx
+            dauer=frame_ende-frame_start
+            frame_start=frame_idx
             print(envs.ai2s)
-            print(f"Episode: {episode_idx} Frame: {frame_idx} Reward: {reward} Loss: {loss} Epsilon: {epsilon}")
+            print(f"Episode: {episode_idx} Frame: {frame_idx} Reward: {reward} Loss: {loss} Epsilon: {epsilon} Dauer: {dauer}")
             raw_rewards = infos.get("raw_rewards", None)
             for name, value in zip(reward_names, raw_rewards):
                 print(f"{name}: {reward_counts[name]}")
