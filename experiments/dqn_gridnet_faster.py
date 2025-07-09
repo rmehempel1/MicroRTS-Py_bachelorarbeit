@@ -1338,7 +1338,7 @@ if __name__ == "__main__":
             frame_ende=frame_idx
             dauer=frame_ende-frame_start
             frame_start=frame_idx
-            print(envs.ai2s)
+            #print(envs.ai2s)
             print(f"Episode: {episode_idx} Frame: {frame_idx} Reward: {reward} Loss: {loss} Epsilon: {epsilon} Dauer: {dauer}")
             raw_rewards = infos.get("raw_rewards", None)
             for name, value in zip(reward_names, raw_rewards):
