@@ -118,7 +118,21 @@ def parse_args():
     # fmt: on
     return args
 
-
+ALL_REWARD_KEYS = [
+    "WinLossRewardFunction",
+    "ResourceGatherRewardFunction",
+    "ProduceWorkerRewardFunction",
+    "ProduceBuildingRewardFunction",
+    "AttackRewardFunction",
+    "ProduceCombatUnitRewardFunction",
+    "discounted_WinLossRewardFunction",
+    "discounted_ResourceGatherRewardFunction",
+    "discounted_ProduceWorkerRewardFunction",
+    "discounted_ProduceBuildingRewardFunction",
+    "discounted_AttackRewardFunction",
+    "discounted_ProduceCombatUnitRewardFunction",
+    "discounted"
+]
 class MicroRTSStatsRecorder(VecEnvWrapper):
     """Nimmt eine Vektorisierte Umgebung und fügt Auswertungstools ein"""
 
@@ -169,22 +183,48 @@ def to_scalar(x):
     except Exception as e:
         print(f"[WARN] to_scalar failed for {x}: {e}")
         return 0.0
-
-def log_metrics_to_csv(log_file, **metrics):
+def log_metrics_to_csv(
+    log_file,
+    episode,
+    loss,
+    reward,
+    epsilon,
+    sps,
+    start_time,
+    win_rate,
+    microrts_stats,
+    episode_length=None,
+    episode_return=None,
+    episode_time=None
+):
     file_exists = os.path.isfile(log_file)
 
-    # Feste Reihenfolge für bekannte Felder, Rest alphabetisch
-    ordered_keys = ["episode", "reward", "epsilon", "win_rate", "frame_idx", "sps", "loss"]
-    other_keys = sorted(k for k in metrics.keys() if k not in ordered_keys)
-    fieldnames = ordered_keys + other_keys
+    # Füge alle erwarteten Felder ein, auch wenn sie fehlen
+    stats_filled = {k: float(microrts_stats.get(k, 0.0)) for k in ALL_REWARD_KEYS}
+
+    fieldnames = [
+        "episode", "loss", "reward", "epsilon", "sps", "time", "win_rate",
+        "episode_length", "episode_return", "episode_time"
+    ] + ALL_REWARD_KEYS
 
     with open(log_file, mode="a", newline="") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-
         if not file_exists:
             writer.writeheader()
-
-        writer.writerow(metrics)
+        row = {
+            "episode": episode,
+            "loss": loss,
+            "reward": reward,
+            "epsilon": epsilon,
+            "sps": sps,
+            "time": time.time() - start_time,
+            "win_rate": win_rate,
+            "episode_length": episode_length,
+            "episode_return": episode_return,
+            "episode_time": episode_time,
+        }
+        row.update(stats_filled)
+        writer.writerow(row)
 
 def log_training_status(episode_idx, frame_idx, reward, mean_reward, epsilon, start_time):
     reward_val = to_scalar(reward)
@@ -1197,6 +1237,17 @@ if __name__ == "__main__":
                     head.decision_head.bias[1] = 10.0
 
 
+    REWARD_FUNCTION_KEYS = [
+        "WinLossRewardFunction",
+        "ResourceGatherRewardFunction",
+        "ProduceWorkerRewardFunction",
+        "ProduceBuildingRewardFunction",
+        "AttackRewardFunction",
+        "ProduceCombatUnitRewardFunction",
+    ]
+
+
+
     """
     Training
     """
@@ -1251,32 +1302,30 @@ if __name__ == "__main__":
             log_training_status(episode_idx, frame_idx, reward, mean_reward, epsilon, start_time)
 
         if reward is not None:
+            episode_idx += 1
+            total_rewards.append(reward)
+            reward_queue.append(reward)
+
+            mean_reward = np.mean(total_rewards[-100:])
             infos = getattr(envs.venv.venv, "last_info", [{}])[0]
+
             microrts_stats = infos.get("microrts_stats", {})
             episode_info = infos.get("episode", {})
-            raw_rewards_last = infos.get("raw_rewards", [])
             win_flag = infos.get("player_won", -1) == 0
 
-            # Logging-Call mit dynamischem Inhalt
             log_metrics_to_csv(
                 log_file=os.path.join(log_dir, f"{args.exp_name}.csv"),
                 episode=episode_idx,
+                loss=loss.item() if 'loss' in locals() else None,
                 reward=reward,
                 epsilon=epsilon,
-                win_rate=int(win_flag),
-                frame_idx=frame_idx,
                 sps=frame_idx / (time.time() - start_time),
-                loss=loss.item() if 'loss' in locals() else None,
-                **microrts_stats,  # z. B. WinLossRewardFunction etc.
+                start_time=start_time,
+                win_rate=int(win_flag),
+                microrts_stats=microrts_stats,
                 episode_length=episode_info.get("l"),
                 episode_return=episode_info.get("r"),
                 episode_time=episode_info.get("t"),
-                raw_reward_0=raw_rewards_last[0] if len(raw_rewards_last) > 0 else None,
-                raw_reward_1=raw_rewards_last[1] if len(raw_rewards_last) > 1 else None,
-                raw_reward_2=raw_rewards_last[2] if len(raw_rewards_last) > 2 else None,
-                raw_reward_3=raw_rewards_last[3] if len(raw_rewards_last) > 3 else None,
-                raw_reward_4=raw_rewards_last[4] if len(raw_rewards_last) > 4 else None,
-                raw_reward_5=raw_rewards_last[5] if len(raw_rewards_last) > 5 else None,
             )
 
             if best_mean_reward is None or best_mean_reward < mean_reward:
