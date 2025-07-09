@@ -1243,7 +1243,7 @@ if __name__ == "__main__":
     ]
     reward_counts = {name: 0 for name in reward_names}
     frame_start=0
-    csv_path="./csv/"
+    csv_path = os.path.join("./csv", f"{args.exp_name}.csv")
     print("Starte Training")
 
     start_time = time.time()
