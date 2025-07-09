@@ -1034,8 +1034,8 @@ class Agent:
         if np.any(is_done):
             done_reward = self.total_reward
             self._reset()
-            return {"done": True, "reward": done_reward, "infos": infos}
-        return {"done": False, "reward": reward, "infos": infos}
+            return {"done": True, "reward": done_reward[0], "infos": infos[0]}
+        return {"done": False, "reward": reward[0], "infos": infos[0]}
 
     def calc_loss(self, batch, target_heads, gamma=0.99):
         states, actions, action_taken_grid, rewards, dones, next_states = batch
