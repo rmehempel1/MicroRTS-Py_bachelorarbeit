@@ -1271,7 +1271,15 @@ if __name__ == "__main__":
     os.makedirs(model_dir, exist_ok=True)
     log_dir=f"./{args.exp_name}/csv/"
     os.makedirs(log_dir, exist_ok=True)
-
+    reward_names = [
+        "WinLossReward",
+        "ResourceGatherReward",
+        "ProduceWorkerReward",
+        "ProduceBuildingReward",
+        "AttackReward",
+        "ProduceCombatUnitReward"
+    ]
+    reward_counts = {name: 0 for name in reward_names}
     print("Starte Training")
 
     start_time = time.time()
@@ -1288,28 +1296,26 @@ if __name__ == "__main__":
         reward = step_info["reward"]
         infos = step_info["infos"]
 
-        print(f"Step: {frame_idx} Done: {done} Reward: {reward}")
+        #print(f"Step: {frame_idx} Done: {done} Reward: {reward}")
 
+        raw_rewards = infos.get("raw_rewards", None)
+
+        for name, value in zip(reward_names, raw_rewards):
+                reward_counts[name] += value
         # envs.venv.venv.render(mode="human")
 
 
         if done:
-            episode_idx += 1
-            print("Episode", episode_idx)
-            print("Reward Done:", reward)   #je nach dem ob done reward oder reward_done
-            reward_names = [
-                "WinLossReward",
-                "ResourceGatherReward",
-                "ProduceWorkerReward",
-                "ProduceBuildingReward",
-                "AttackReward",
-                "ProduceCombatUnitReward"
-            ]
+            print(f"Episode: {episode_idx} Frame: {frame_idx} Reward: {reward}")
             raw_rewards = infos.get("raw_rewards", None)
-            if raw_rewards is not None:
-                print("Einzelne Reward-Komponenten:")
-                for name, value in zip(reward_names, raw_rewards):
-                    print(f"{name}: {value}")
+            for name, value in zip(reward_names, raw_rewards):
+                print(reward_counts[name])
+                reward_counts[name]=0
+            episode_idx += 1
+
+
+
+
 
 
 
