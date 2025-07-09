@@ -1309,7 +1309,7 @@ if __name__ == "__main__":
             print(f"Episode: {episode_idx} Frame: {frame_idx} Reward: {reward}")
             raw_rewards = infos.get("raw_rewards", None)
             for name, value in zip(reward_names, raw_rewards):
-                print(reward_counts[name])
+                print(f"{name}: {reward_counts[name]}")
                 reward_counts[name]=0
             episode_idx += 1
 
