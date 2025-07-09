@@ -1305,13 +1305,7 @@ if __name__ == "__main__":
         # envs.venv.venv.render(mode="human")
 
 
-        if done:
-            print(f"Episode: {episode_idx} Frame: {frame_idx} Reward: {reward}")
-            raw_rewards = infos.get("raw_rewards", None)
-            for name, value in zip(reward_names, raw_rewards):
-                print(f"{name}: {reward_counts[name]}")
-                reward_counts[name]=0
-            episode_idx += 1
+
 
 
 
@@ -1338,9 +1332,15 @@ if __name__ == "__main__":
         optimizer.step()
 
         # Logging
-        if frame_idx % 1000 == 0:
-            print("frame index:", frame_idx)
-            print("Loss:", loss)
+        if done:
+            episode_idx += 1
+            print(f"Episode: {episode_idx} Frame: {frame_idx} Reward: {reward} Loss: {loss} Epsilon: {epsilon}")
+            raw_rewards = infos.get("raw_rewards", None)
+            for name, value in zip(reward_names, raw_rewards):
+                print(f"{name}: {reward_counts[name]}")
+                reward_counts[name]=0
+
+
 
         if frame_idx % 100000 == 0:
             for name, head in agent.heads.items():
