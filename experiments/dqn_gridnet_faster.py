@@ -1034,8 +1034,8 @@ class Agent:
         if np.any(is_done):
             done_reward = self.total_reward
             self._reset()
-            return done_reward, True
-        return None, False
+            return {"done": True, "reward": done_reward, "infos": infos}
+        return {"done": False, "reward": reward, "infos": infos}
 
     def calc_loss(self, batch, target_heads, gamma=0.99):
         states, actions, action_taken_grid, rewards, dones, next_states = batch
@@ -1294,46 +1294,26 @@ if __name__ == "__main__":
 
     while frame_idx < args.total_timesteps:
         frame_idx += 1
-        epsilon = max(args.epsilon_final, args.epsilon_start - frame_idx / args.epsilon_decay)
 
-        reward, done = agent.play_step(epsilon=epsilon, device=device)
+        reward, done, infos = agent.play_step(epsilon=epsilon, device=device)
+        print(f"Step: {frame_idx} Done: {done} Reward: {reward}")
+        print("Infos: ", infos)
         # envs.venv.venv.render(mode="human")
-        if frame_idx % log_interval == 0:
-            log_training_status(episode_idx, frame_idx, reward, mean_reward, epsilon, start_time)
 
-        if reward is not None:
-            if done:
-                episode_idx += 1
-                total_rewards.append(reward)
-                reward_queue.append(reward)
 
-                mean_reward = np.mean(total_rewards[-100:])
-                infos = getattr(envs.venv.venv, "last_info", [{}])[0]
+        if done:
+            episode_idx += 1
+            print("Episode", episode_idx)
+            print("Reward Done:", reward)   #je nach dem ob done reward oder reward_done
+            win_flag = infos.get("player_won", -1) == 0
+            print("gewonnen:", win_flag)
 
-                microrts_stats = infos.get("microrts_stats", {})
-                episode_info = infos.get("episode", {})
-                win_flag = infos.get("player_won", -1) == 0
 
-                log_metrics_to_csv(
-                    log_file=os.path.join(log_dir, f"{args.exp_name}.csv"),
-                    episode=episode_idx,
-                    loss=loss.item() if 'loss' in locals() else None,
-                    reward=float(reward),
-                    epsilon=epsilon,
-                    sps=frame_idx / (time.time() - start_time),
-                    start_time=start_time,
-                    win_rate=int(win_flag),
-                    microrts_stats=microrts_stats,
-                    episode_length=episode_info.get("l"),
-                    episode_return=episode_info.get("r"),
-                    episode_time=episode_info.get("t"),
-                )
-
-            if best_mean_reward is None or best_mean_reward < mean_reward:
-                print(f"Neues bestes Ergebnis: {best_mean_reward} → {mean_reward:.2f}")
-                best_mean_reward = mean_reward
-                for name, head in agent.heads.items():
-                    torch.save(head.state_dict(), os.path.join(model_dir, f"{args.exp_name}_{name}_best.pth"))
+        if best_mean_reward is None or best_mean_reward < mean_reward:
+            print(f"Neues bestes Ergebnis: {best_mean_reward} → {mean_reward:.2f}")
+            best_mean_reward = mean_reward
+            for name, head in agent.heads.items():
+                torch.save(head.state_dict(), os.path.join(model_dir, f"{args.exp_name}_{name}_best.pth"))
 
         if len(expbuffer) < args.batch_size:
             continue
