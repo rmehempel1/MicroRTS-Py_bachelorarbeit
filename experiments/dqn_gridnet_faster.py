@@ -118,21 +118,7 @@ def parse_args():
     # fmt: on
     return args
 
-ALL_REWARD_KEYS = [
-    "WinLossRewardFunction",
-    "ResourceGatherRewardFunction",
-    "ProduceWorkerRewardFunction",
-    "ProduceBuildingRewardFunction",
-    "AttackRewardFunction",
-    "ProduceCombatUnitRewardFunction",
-    "discounted_WinLossRewardFunction",
-    "discounted_ResourceGatherRewardFunction",
-    "discounted_ProduceWorkerRewardFunction",
-    "discounted_ProduceBuildingRewardFunction",
-    "discounted_AttackRewardFunction",
-    "discounted_ProduceCombatUnitRewardFunction",
-    "discounted"
-]
+
 class MicroRTSStatsRecorder(VecEnvWrapper):
     """Nimmt eine Vektorisierte Umgebung und fügt Auswertungstools ein"""
 
@@ -183,63 +169,40 @@ def to_scalar(x):
     except Exception as e:
         print(f"[WARN] to_scalar failed for {x}: {e}")
         return 0.0
-def log_metrics_to_csv(
-    log_file,
-    episode,
-    loss,
-    reward,
-    epsilon,
-    sps,
-    start_time,
-    win_rate,
-    microrts_stats,
-    episode_length=None,
-    episode_return=None,
-    episode_time=None
+
+import csv
+
+def log_episode_to_csv(
+    csv_path: str,
+    episode_idx: int,
+    frame_idx: int,
+    reward: float,
+    loss: float,
+    epsilon: float,
+    dauer: float,
+    reward_counts: dict,
+    reward_names: list
 ):
-    file_exists = os.path.isfile(log_file)
+    """
+    Schreibt eine abgeschlossene Episode in eine CSV-Datei.
+    """
+    row = [
+        episode_idx,
+        frame_idx,
+        reward,
+        loss if loss is not None else "",
+        epsilon,
+        dauer
+    ] + [reward_counts.get(name, 0) for name in reward_names]
 
-    # Füge alle erwarteten Felder ein, auch wenn sie fehlen
-    stats_filled = {k: float(microrts_stats.get(k, 0.0)) for k in ALL_REWARD_KEYS}
-
-    fieldnames = [
-        "episode", "loss", "reward", "epsilon", "sps", "time", "win_rate",
-        "episode_length", "episode_return", "episode_time"
-    ] + ALL_REWARD_KEYS
-
-    with open(log_file, mode="a", newline="") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-        if not file_exists:
-            writer.writeheader()
-        row = {
-            "episode": episode,
-            "loss": loss,
-            "reward": reward,
-            "epsilon": epsilon,
-            "sps": sps,
-            "time": time.time() - start_time,
-            "win_rate": win_rate,
-            "episode_length": episode_length,
-            "episode_return": episode_return,
-            "episode_time": episode_time,
-        }
-        row.update(stats_filled)
+    file_exists = os.path.isfile(csv_path)
+    with open(csv_path, mode="a", newline="") as f:
+        writer = csv.writer(f)
+        if not file_exists or os.stat(csv_path).st_size == 0:
+            writer.writerow(["episode", "frame", "reward", "loss", "epsilon", "dauer"] + reward_names)
         writer.writerow(row)
 
-def log_training_status(episode_idx, frame_idx, reward, mean_reward, epsilon, start_time):
-    reward_val = to_scalar(reward)
-    mean_val = to_scalar(mean_reward)
-    eps_val = to_scalar(epsilon)
-    sps = frame_idx / (time.time() - start_time + 1e-8)  # Schutz gegen Division durch 0
 
-    print(
-        f"[Episode {episode_idx:4d}] "
-        f"Frame {frame_idx:7d} | "
-        f"Reward: {reward_val:.2f} | "
-        f"Mean(100): {mean_val:.2f} | "
-        f"Epsilon: {eps_val:.2f} | "
-        f"SPS: {sps:.2f}"
-    )
 
 
 def get_headwise_action_mask(env, actions_shape, head_config):
@@ -1280,6 +1243,7 @@ if __name__ == "__main__":
     ]
     reward_counts = {name: 0 for name in reward_names}
     frame_start=0
+    csv_path="./csv/"
     print("Starte Training")
 
     start_time = time.time()
@@ -1343,6 +1307,17 @@ if __name__ == "__main__":
             raw_rewards = infos.get("raw_rewards", None)
             for name, value in zip(reward_names, raw_rewards):
                 print(f"{name}: {reward_counts[name]}")
+                log_episode_to_csv(
+                    csv_path=csv_path,
+                    episode_idx=episode_idx,
+                    frame_idx=frame_idx,
+                    reward=reward,
+                    loss=loss if 'loss' in locals() else None,
+                    epsilon=epsilon,
+                    dauer=time.time() - start_time,
+                    reward_counts=reward_counts,
+                    reward_names=reward_names
+                )
                 reward_counts[name]=0
 
 
