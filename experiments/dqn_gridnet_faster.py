@@ -891,7 +891,7 @@ class Agent:
             action = action.reshape(self.env.num_envs, -1)
             # Führe Aktion aus
             torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
-            new_state, reward, is_done, _ = self.env.step(action)
+            new_state, reward, is_done, infos = self.env.step(action)
             self.total_reward += reward
         else:
             # Zustand vorbereiten für Netzwerkeingabe
@@ -1014,7 +1014,9 @@ class Agent:
             # Führe Aktion aus
             torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
             new_state, reward, is_done, infos = self.env.step(action)
-            self.env.venv.venv.last_info = infos #fürs logging
+            print("reward:", reward)
+            print("is_done:", is_done)
+            print("infos:", infos)
 
             self.total_reward += reward
 
@@ -1295,9 +1297,13 @@ if __name__ == "__main__":
     while frame_idx < args.total_timesteps:
         frame_idx += 1
 
-        reward, done, infos = agent.play_step(epsilon=epsilon, device=device)
+        step_info = agent.play_step(epsilon=epsilon, device=device)
+        done = step_info["done"]
+        reward = step_info["reward"]
+        infos = step_info["infos"]
+
         print(f"Step: {frame_idx} Done: {done} Reward: {reward}")
-        print("Infos: ", infos)
+
         # envs.venv.venv.render(mode="human")
 
 
@@ -1305,8 +1311,9 @@ if __name__ == "__main__":
             episode_idx += 1
             print("Episode", episode_idx)
             print("Reward Done:", reward)   #je nach dem ob done reward oder reward_done
-            win_flag = infos.get("player_won", -1) == 0
-            print("gewonnen:", win_flag)
+            stats = infos.get("microrts_stats", {})
+            for k, v in stats.items():
+                print(f"{k}: {v}")
 
 
         if best_mean_reward is None or best_mean_reward < mean_reward:
