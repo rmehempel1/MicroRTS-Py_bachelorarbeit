@@ -64,9 +64,9 @@ def parse_args():
                         help='if toggled, the game will have partial observability')
     parser.add_argument('--n-minibatch', type=int, default=4,
                         help='the number of mini batch')
-    parser.add_argument('--num-bot-envs', type=int, default=0,
+    parser.add_argument('--num-bot-envs', type=int, default=4,
                         help='the number of bot game environment; 16 bot envs means 16 games')
-    parser.add_argument('--num-selfplay-envs', type=int, default=24,
+    parser.add_argument('--num-selfplay-envs', type=int, default=0,
                         help='the number of self play envs; 16 self play envs means 8 games')
     parser.add_argument('--num-steps', type=int, default=256,
                         help='the number of steps per game environment')
@@ -1161,8 +1161,7 @@ if __name__ == "__main__":
         max_steps=1000,
         render_theme=2,
         ai2s=([microrts_ai.passiveAI for _ in range(args.num_bot_envs // 2)] +
-              [microrts_ai.workerRushAI for _ in range(args.num_bot_envs // 2)])
-        ,
+              [microrts_ai.workerRushAI for _ in range(args.num_bot_envs // 2)]),
         map_paths=[args.train_maps[0]],
         reward_weight=np.array([100.0, 1.0, 40.0, -50.0, 50.0, -50.0]),
         # Win, Ressource, ProduceWorker, Produce Building, Attack, ProduceCombat Unit, (auskommentiert closer to enemy base)
@@ -1291,6 +1290,7 @@ if __name__ == "__main__":
     while frame_idx < args.total_timesteps:
         frame_idx += 1
 
+
         step_info = agent.play_step(epsilon=epsilon, device=device)
         done = step_info["done"]
         reward = step_info["reward"]
@@ -1334,6 +1334,7 @@ if __name__ == "__main__":
         # Logging
         if done:
             episode_idx += 1
+            print(envs.ai2s)
             print(f"Episode: {episode_idx} Frame: {frame_idx} Reward: {reward} Loss: {loss} Epsilon: {epsilon}")
             raw_rewards = infos.get("raw_rewards", None)
             for name, value in zip(reward_names, raw_rewards):
