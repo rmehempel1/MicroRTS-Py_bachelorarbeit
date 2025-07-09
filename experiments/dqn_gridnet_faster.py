@@ -170,32 +170,21 @@ def to_scalar(x):
         print(f"[WARN] to_scalar failed for {x}: {e}")
         return 0.0
 
-def log_metrics_to_csv(log_file, episode, loss, reward, epsilon, sps, start_time, win_rate=None, raw_rewards=None):
-    """
-    Schreibt Metriken pro Episode in eine CSV-Datei, inklusive der bisherigen Laufzeit.
-    Optional: win_rate und raw_rewards (z. B. für Reward-Komponenten wie Ressourcen, Angriffe etc.)
-    """
+def log_metrics_to_csv(log_file, **metrics):
     file_exists = os.path.isfile(log_file)
-    runtime = time.time() - start_time  # Laufzeit in Sekunden
 
-    with open(log_file, mode='a', newline='') as file:
-        writer = csv.writer(file)
+    # Feste Reihenfolge für bekannte Felder, Rest alphabetisch
+    ordered_keys = ["episode", "reward", "epsilon", "win_rate", "frame_idx", "sps", "loss"]
+    other_keys = sorted(k for k in metrics.keys() if k not in ordered_keys)
+    fieldnames = ordered_keys + other_keys
+
+    with open(log_file, mode="a", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+
         if not file_exists:
-            header = ['Episode', 'Loss', 'Reward', 'Epsilon', 'SPS', 'Runtime_sec']
-            if win_rate is not None:
-                header.append('Win')
-            if raw_rewards is not None:
-                for key in raw_rewards.keys():
-                    header.append(f'reward_{key}')
-            writer.writerow(header)
+            writer.writeheader()
 
-        row = [episode, loss, reward, epsilon, sps, round(runtime, 2)]
-        if win_rate is not None:
-            row.append(win_rate)
-        if raw_rewards is not None:
-            for val in raw_rewards.values():
-                row.append(val)
-        writer.writerow(row)
+        writer.writerow(metrics)
 
 def log_training_status(episode_idx, frame_idx, reward, mean_reward, epsilon, start_time):
     reward_val = to_scalar(reward)
@@ -661,130 +650,93 @@ class Agent:
 
     @torch.no_grad()
     def play_eval(self,device="cpu",epsilon=0.5):
-        if np.random.random() < epsilon:
-            raw_masks = self.env.venv.venv.get_action_mask()  # [num_envs, H*W, 78]
-            grid_size = int(np.sqrt(raw_masks.shape[1]))
 
-            def sample_valid(mask_2d):
-                valid_indices = np.where(mask_2d)[0]
-                if len(valid_indices) == 0:
-                    return 0  # Fallback auf 0
-                return np.random.choice(valid_indices)
+        #print("state shape", self.state.shape)
+        full_mask = self.env.venv.venv.get_action_mask()
+        state_v = torch.tensor(self.state, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
 
-            action = np.zeros((self.env.num_envs, grid_size, grid_size, 7), dtype=np.int32)
-            action_taken_grid = np.zeros((self.env.num_envs, grid_size, grid_size), dtype=np.int32)
-            for env_i in range(self.env.num_envs):
-                for idx in range(grid_size * grid_size):
-                    cell_mask = raw_masks[env_i, idx]
-                    i, j = divmod(idx, grid_size)
+        """Jeder Kopf muss alle seine maximal Möglichen Aktionen machen, diese einzeln. Die beste Aktion an Merge 
+        schicken, welcher die Gesamtaktion ausführt
+        """
+        # Berechne strukturierte Aktionsmasken
+        masks = self._get_structured_action_masks(self.state, device=self.device)
+        #print("state_v shaoe", state_v.shape)
 
-                    a_type = sample_valid(cell_mask[0:6])
-                    action[env_i, i, j, 0] = a_type
-                    action_taken_grid[env_i, i, j] = a_type
-                    if a_type == 1:  # Move
-                        action[env_i, i, j, 1] = sample_valid(cell_mask[6:10])
-                    elif a_type == 2:  # Harvest
-                        action[env_i, i, j, 2] = sample_valid(cell_mask[10:14])
-                    elif a_type == 3:  # Return
-                        action[env_i, i, j, 3] = sample_valid(cell_mask[14:18])
-                    elif a_type == 4:  # Produce
-                        action[env_i, i, j, 4] = sample_valid(cell_mask[18:22])
-                        action[env_i, i, j, 5] = sample_valid(cell_mask[22:29])
-                    elif a_type == 5:  # Attack
-                        action[env_i, i, j, 6] = sample_valid(cell_mask[29:78])
+        # Attack
+        attack_dec = self.attack_head.encoder_decision(state_v)
+        attack_decision_logits = self.attack_head.decision_head[0](attack_dec)
+        attack_allowed_mask = masks["action_type"][:, 5]  # [B, H, W]
+        attack_decision_logits[:, 1] = attack_decision_logits[:, 1].masked_fill(attack_allowed_mask == 0, float("-inf"))
+        attack_mask = attack_decision_logits.argmax(dim=1).cpu().numpy()
 
-            action = action.reshape(self.env.num_envs, -1)
-            # Führe Aktion aus
-            torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
-            new_state, reward, is_done, _ = self.env.step(action)
-            self.total_reward += reward
-        else:
-            #print("state shape", self.state.shape)
-            full_mask = self.env.venv.venv.get_action_mask()
-            state_v = torch.tensor(self.state, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
+        att_dir = self.attack_head.encoder_target(state_v)
+        attack_dir_logits = self.attack_head.target_head[0](att_dir)
+        attack_dir_masked = attack_dir_logits.masked_fill(masks["attack_dir"] == 0, float("-inf"))
+        attack_param = attack_dir_masked.argmax(dim=1).cpu().numpy()
 
-            """Jeder Kopf muss alle seine maximal Möglichen Aktionen machen, diese einzeln. Die beste Aktion an Merge 
-            schicken, welcher die Gesamtaktion ausführt
-            """
-            # Berechne strukturierte Aktionsmasken
-            masks = self._get_structured_action_masks(self.state, device=self.device)
-            #print("state_v shaoe", state_v.shape)
+        # Move
+        # Entscheidung
+        move_dec = self.movement_head.encoder_decision(state_v)
+        move_decision_logits = self.movement_head.decision_head[0](move_dec)
+        move_allowed_mask = masks["action_type"][:, 1]  # move erlaubt?
+        move_decision_logits[:, 1] = move_decision_logits[:, 1].masked_fill(move_allowed_mask == 0, float("-inf"))
+        move_mask = move_decision_logits.argmax(dim=1).cpu().numpy()
 
-            # Attack
-            attack_dec = self.attack_head.encoder_decision(state_v)
-            attack_decision_logits = self.attack_head.decision_head[0](attack_dec)
-            attack_allowed_mask = masks["action_type"][:, 5]  # [B, H, W]
-            attack_decision_logits[:, 1] = attack_decision_logits[:, 1].masked_fill(attack_allowed_mask == 0, float("-inf"))
-            attack_mask = attack_decision_logits.argmax(dim=1).cpu().numpy()
+        # Richtung
+        move_dir = self.movement_head.encoder_dir(state_v)
+        move_dir_logits = self.movement_head.dir_head[0](move_dir)
+        move_dir_masked = move_dir_logits.masked_fill(masks["move_dir"] == 0, float("-inf"))
+        move_param = move_dir_masked.argmax(dim=1).cpu().numpy()
 
-            att_dir = self.attack_head.encoder_target(state_v)
-            attack_dir_logits = self.attack_head.target_head[0](att_dir)
-            attack_dir_masked = attack_dir_logits.masked_fill(masks["attack_dir"] == 0, float("-inf"))
-            attack_param = attack_dir_masked.argmax(dim=1).cpu().numpy()
+        # Harvest
+        # Entscheidung
+        harv_dec = self.harvest_head.encoder_decision(state_v)
+        harvest_decision_logits = self.harvest_head.decision_head[0](harv_dec)
+        harvest_allowed_mask = masks["action_type"][:, 2]  # Index 2 = harvest
+        harvest_decision_logits[:, 1] = harvest_decision_logits[:, 1].masked_fill(harvest_allowed_mask == 0,
+                                                                                  float("-inf"))
+        harvest_mask = harvest_decision_logits.argmax(dim=1).cpu().numpy()
 
-            # Move
-            # Entscheidung
-            move_dec = self.movement_head.encoder_decision(state_v)
-            move_decision_logits = self.movement_head.decision_head[0](move_dec)
-            move_allowed_mask = masks["action_type"][:, 1]  # move erlaubt?
-            move_decision_logits[:, 1] = move_decision_logits[:, 1].masked_fill(move_allowed_mask == 0, float("-inf"))
-            move_mask = move_decision_logits.argmax(dim=1).cpu().numpy()
+        # Richtung
+        harv_dir = self.harvest_head.encoder_dir(state_v)
+        harvest_dir_logits = self.harvest_head.dir_head[0](harv_dir)
+        harvest_dir_masked = harvest_dir_logits.masked_fill(masks["harvest_dir"] == 0, float("-inf"))
+        harvest_param = harvest_dir_masked.argmax(dim=1).cpu().numpy()
 
-            # Richtung
-            move_dir = self.movement_head.encoder_dir(state_v)
-            move_dir_logits = self.movement_head.dir_head[0](move_dir)
-            move_dir_masked = move_dir_logits.masked_fill(masks["move_dir"] == 0, float("-inf"))
-            move_param = move_dir_masked.argmax(dim=1).cpu().numpy()
+        # Return
+        # Entscheidung
+        ret_dec = self.return_head.encoder_decision(state_v)
+        return_decision_logits = self.return_head.decision_head[0](ret_dec)
+        return_allowed_mask = masks["action_type"][:, 3]
+        return_decision_logits[:, 1] = return_decision_logits[:, 1].masked_fill(return_allowed_mask == 0, float("-inf"))
+        return_mask = return_decision_logits.argmax(dim=1).cpu().numpy()
 
-            # Harvest
-            # Entscheidung
-            harv_dec = self.harvest_head.encoder_decision(state_v)
-            harvest_decision_logits = self.harvest_head.decision_head[0](harv_dec)
-            harvest_allowed_mask = masks["action_type"][:, 2]  # Index 2 = harvest
-            harvest_decision_logits[:, 1] = harvest_decision_logits[:, 1].masked_fill(harvest_allowed_mask == 0,
-                                                                                      float("-inf"))
-            harvest_mask = harvest_decision_logits.argmax(dim=1).cpu().numpy()
+        # Richtung
+        ret_dir = self.return_head.encoder_dir(state_v)
+        return_dir_logits = self.return_head.dir_head[0](ret_dir)
+        return_dir_masked = return_dir_logits.masked_fill(masks["return_dir"] == 0, float("-inf"))
+        return_param = return_dir_masked.argmax(dim=1).cpu().numpy()
 
-            # Richtung
-            harv_dir = self.harvest_head.encoder_dir(state_v)
-            harvest_dir_logits = self.harvest_head.dir_head[0](harv_dir)
-            harvest_dir_masked = harvest_dir_logits.masked_fill(masks["harvest_dir"] == 0, float("-inf"))
-            harvest_param = harvest_dir_masked.argmax(dim=1).cpu().numpy()
+        # Produce
+        # Entscheidung
+        prod_dec = self.produce_head.encoder_decision(state_v)
+        produce_decision_logits = self.produce_head.decision_head[0](prod_dec)
+        produce_allowed_mask = masks["action_type"][:, 4]
+        produce_decision_logits[:, 1] = produce_decision_logits[:, 1].masked_fill(produce_allowed_mask == 0,
+                                                                                  float("-inf"))
+        produce_mask = produce_decision_logits.argmax(dim=1).cpu().numpy()
 
-            # Return
-            # Entscheidung
-            ret_dec = self.return_head.encoder_decision(state_v)
-            return_decision_logits = self.return_head.decision_head[0](ret_dec)
-            return_allowed_mask = masks["action_type"][:, 3]
-            return_decision_logits[:, 1] = return_decision_logits[:, 1].masked_fill(return_allowed_mask == 0, float("-inf"))
-            return_mask = return_decision_logits.argmax(dim=1).cpu().numpy()
+        # Richtung
+        prod_dir = self.produce_head.encoder_dir(state_v)
+        produce_dir_logits = self.produce_head.dir_head[0](prod_dir)
+        produce_dir_masked = produce_dir_logits.masked_fill(masks["produce_dir"] == 0, float("-inf"))
+        produce_param = produce_dir_masked.argmax(dim=1).cpu().numpy()
 
-            # Richtung
-            ret_dir = self.return_head.encoder_dir(state_v)
-            return_dir_logits = self.return_head.dir_head[0](ret_dir)
-            return_dir_masked = return_dir_logits.masked_fill(masks["return_dir"] == 0, float("-inf"))
-            return_param = return_dir_masked.argmax(dim=1).cpu().numpy()
-
-            # Produce
-            # Entscheidung
-            prod_dec = self.produce_head.encoder_decision(state_v)
-            produce_decision_logits = self.produce_head.decision_head[0](prod_dec)
-            produce_allowed_mask = masks["action_type"][:, 4]
-            produce_decision_logits[:, 1] = produce_decision_logits[:, 1].masked_fill(produce_allowed_mask == 0,
-                                                                                      float("-inf"))
-            produce_mask = produce_decision_logits.argmax(dim=1).cpu().numpy()
-
-            # Richtung
-            prod_dir = self.produce_head.encoder_dir(state_v)
-            produce_dir_logits = self.produce_head.dir_head[0](prod_dir)
-            produce_dir_masked = produce_dir_logits.masked_fill(masks["produce_dir"] == 0, float("-inf"))
-            produce_param = produce_dir_masked.argmax(dim=1).cpu().numpy()
-
-            # Typ
-            prod_type = self.produce_head.encoder_type(state_v)
-            produce_type_logits = self.produce_head.type_head[0](prod_type)
-            produce_type_masked = produce_type_logits.masked_fill(masks["produce_type"] == 0, float("-inf"))
-            produce_type = produce_type_masked.argmax(dim=1).cpu().numpy()
+        # Typ
+        prod_type = self.produce_head.encoder_type(state_v)
+        produce_type_logits = self.produce_head.type_head[0](prod_type)
+        produce_type_masked = produce_type_logits.masked_fill(masks["produce_type"] == 0, float("-inf"))
+        produce_type = produce_type_masked.argmax(dim=1).cpu().numpy()
 
         # Führe Teilaktion zur Gesamtaktion zusammen
         action_type_grid = self.get_action_type_grid(masks,
@@ -818,7 +770,10 @@ class Agent:
 
         torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
 
-        new_state, reward, is_done, _ = self.env.step(action)
+        new_state, reward, is_done, infos = self.env.step(action)
+        print("Infos (raw):", infos)
+        #print("Keys:", list(infos[0].keys()))
+
         self.total_reward += reward
 
         # print("action.shape before storing:", action.shape)
@@ -1163,9 +1118,11 @@ if __name__ == "__main__":
         partial_obs=args.partial_obs,
         max_steps=1000,
         render_theme=2,
-        ai2s=[microrts_ai.passiveAI for _ in range(args.num_bot_envs)],
+        ai2s=([microrts_ai.passiveAI for _ in range(args.num_bot_envs // 2)] +
+              [microrts_ai.workerRushAI for _ in range(args.num_bot_envs // 2)])
+        ,
         map_paths=[args.train_maps[0]],
-        reward_weight=np.array([100.0, 1.0, 15.0, -5.0, 40.0, -5.0]),
+        reward_weight=np.array([100.0, 1.0, 40.0, -50.0, 50.0, -50.0]),
         # Win, Ressource, ProduceWorker, Produce Building, Attack, ProduceCombat Unit, (auskommentiert closer to enemy base)
         cycle_maps=args.train_maps,
     )
@@ -1294,27 +1251,32 @@ if __name__ == "__main__":
             log_training_status(episode_idx, frame_idx, reward, mean_reward, epsilon, start_time)
 
         if reward is not None:
-            episode_idx += 1
-            total_rewards.append(reward)
-            reward_queue.append(reward)
-
-            mean_reward = np.mean(total_rewards[-100:])
-            #csv
-            # Optional: Sieg aus Info (setzt voraus, dass microrts_stats/PlayerWon im Info-Objekt vorliegt)
             infos = getattr(envs.venv.venv, "last_info", [{}])[0]
-            win_flag = infos.get("player_won", -1) == 0  # 0 = unser Agent hat gewonnen
-            raw_reward_components = infos.get("microrts_stats", {})  # dictionary mit Reward-Komponenten
+            microrts_stats = infos.get("microrts_stats", {})
+            episode_info = infos.get("episode", {})
+            raw_rewards_last = infos.get("raw_rewards", [])
+            win_flag = infos.get("player_won", -1) == 0
 
+            # Logging-Call mit dynamischem Inhalt
             log_metrics_to_csv(
                 log_file=os.path.join(log_dir, f"{args.exp_name}.csv"),
                 episode=episode_idx,
-                loss=loss.item() if 'loss' in locals() else None,
                 reward=reward,
                 epsilon=epsilon,
-                sps=frame_idx / (time.time() - start_time),
-                start_time=start_time,
                 win_rate=int(win_flag),
-                raw_rewards=raw_reward_components
+                frame_idx=frame_idx,
+                sps=frame_idx / (time.time() - start_time),
+                loss=loss.item() if 'loss' in locals() else None,
+                **microrts_stats,  # z. B. WinLossRewardFunction etc.
+                episode_length=episode_info.get("l"),
+                episode_return=episode_info.get("r"),
+                episode_time=episode_info.get("t"),
+                raw_reward_0=raw_rewards_last[0] if len(raw_rewards_last) > 0 else None,
+                raw_reward_1=raw_rewards_last[1] if len(raw_rewards_last) > 1 else None,
+                raw_reward_2=raw_rewards_last[2] if len(raw_rewards_last) > 2 else None,
+                raw_reward_3=raw_rewards_last[3] if len(raw_rewards_last) > 3 else None,
+                raw_reward_4=raw_rewards_last[4] if len(raw_rewards_last) > 4 else None,
+                raw_reward_5=raw_rewards_last[5] if len(raw_rewards_last) > 5 else None,
             )
 
             if best_mean_reward is None or best_mean_reward < mean_reward:
