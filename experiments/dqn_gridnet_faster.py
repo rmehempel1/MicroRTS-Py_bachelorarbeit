@@ -1309,19 +1309,20 @@ if __name__ == "__main__":
             #print(envs.ai2s)
             print(f"Episode: {episode_idx} Frame: {frame_idx} Reward: {reward} Loss: {loss} Epsilon: {epsilon} Dauer: {dauer}")
             raw_rewards = infos.get("raw_rewards", None)
+            log_episode_to_csv(
+                csv_path=csv_path,
+                episode_idx=episode_idx,
+                frame_idx=frame_idx,
+                reward=reward,
+                loss=loss.item() if 'loss' in locals() else None,
+                epsilon=epsilon,
+                dauer=dauer,
+                reward_counts=reward_counts,
+                reward_names=reward_names
+            )
             for name, value in zip(reward_names, raw_rewards):
                 print(f"{name}: {reward_counts[name]}")
-                log_episode_to_csv(
-                    csv_path=csv_path,
-                    episode_idx=episode_idx,
-                    frame_idx=frame_idx,
-                    reward=reward,
-                    loss=loss if 'loss' in locals() else None,
-                    epsilon=epsilon,
-                    dauer=time.time() - start_time,
-                    reward_counts=reward_counts,
-                    reward_names=reward_names
-                )
+
                 reward_counts[name]=0
 
 
