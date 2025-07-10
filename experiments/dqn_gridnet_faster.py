@@ -1271,22 +1271,12 @@ if __name__ == "__main__":
 
         for name, value in zip(reward_names, raw_rewards):
                 reward_counts[name] += value
-        # envs.venv.venv.render(mode="human")
+        # envs.venv.venv.render(mode="human)
 
 
 
 
 
-
-
-
-
-
-        if best_mean_reward is None or best_mean_reward < mean_reward:
-            print(f"Neues bestes Ergebnis: {best_mean_reward} → {mean_reward:.2f}")
-            best_mean_reward = mean_reward
-            for name, head in agent.heads.items():
-                torch.save(head.state_dict(), os.path.join(model_dir, f"{args.exp_name}_{name}_best.pth"))
 
         if len(expbuffer) < args.batch_size:
             continue
@@ -1309,12 +1299,13 @@ if __name__ == "__main__":
             #print(envs.ai2s)
             print(f"Episode: {episode_idx} Frame: {frame_idx} Reward: {reward} Loss: {loss} Epsilon: {epsilon} Dauer: {dauer}")
             raw_rewards = infos.get("raw_rewards", None)
+            loss_val = loss.item() if loss is not None else None
             log_episode_to_csv(
                 csv_path=csv_path,
                 episode_idx=episode_idx,
                 frame_idx=frame_idx,
                 reward=reward,
-                loss=loss.item() if 'loss' in locals() else None,
+                loss=loss_val,
                 epsilon=epsilon,
                 dauer=dauer,
                 reward_counts=reward_counts,
@@ -1324,6 +1315,12 @@ if __name__ == "__main__":
                 print(f"{name}: {reward_counts[name]}")
 
                 reward_counts[name]=0
+
+            if best_mean_reward is None or best_mean_reward < mean_reward:
+                print(f"Neues bestes Ergebnis: {best_mean_reward} → {mean_reward:.2f}")
+                best_mean_reward = mean_reward
+                for name, head in agent.heads.items():
+                    torch.save(head.state_dict(), os.path.join(model_dir, f"{args.exp_name}_{name}_best.pth"))
 
 
 
