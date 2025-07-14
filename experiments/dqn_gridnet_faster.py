@@ -826,20 +826,11 @@ class Agent:
         #print("Keys:", list(infos[0].keys()))
 
         self.total_reward += reward
+        return {"done": np.any(is_done), "reward": self.total_reward[0], "infos": infos[0]}
 
         # print("action.shape before storing:", action.shape)
 
-        """
-                for env_i in range(self.env.num_envs):
-            self.exp_buffer.append((
-                self.state[env_i],
-                action[env_i],  # → shape: (448,)
-                action_taken_grid[env_i],
-                reward[env_i],
-                is_done[env_i],
-                new_state[env_i]
-            ))
-        """
+
 
 
 
