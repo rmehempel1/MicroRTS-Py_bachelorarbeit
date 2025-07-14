@@ -1316,6 +1316,7 @@ if __name__ == "__main__":
         optimizer.step()
 
         # Logging
+        print(f"done type: {type(done)}, value: {done}")
         for env_idx, done_flag in enumerate(done):
             if done_flag:
                 episode_idx += 1
