@@ -1236,10 +1236,9 @@ if __name__ == "__main__":
     episode_idx = 0
     best_mean_reward = None
     epsilon = args.epsilon_start
-    log_interval = 1000
     mean_reward = 0.0
     reward_queue = deque(maxlen=100)
-    warmup_frames=50000
+    warmup_frames=100000
     eval_interval=100000
 
     if not args.exp_name:
@@ -1301,8 +1300,11 @@ if __name__ == "__main__":
             continue
 
         if frame_idx % args.sync_interval == 0:
+            sync_target_heads(agent.heads, target_heads)
+
+        if frame_idx % 100000 == 0:
             for name, head in agent.heads.items():
-                torch.save(head.state_dict(), os.path.join(model_dir,f"{args.exp_name}_{name}_{frame_idx}.pth"))
+                torch.save(head.state_dict(), f"checkpoints/{args.exp_name}_{name}_{frame_idx}.pth")
 
         batch = expbuffer.sample(args.batch_size)
         optimizer.zero_grad()
