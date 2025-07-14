@@ -178,6 +178,8 @@ def log_episode_to_csv(
     episode_idx: int,
     frame_idx: int,
     reward: float,
+    mean_reward: float,
+    eval_reward: float,
     loss: float,
     epsilon: float,
     dauer: float,
@@ -191,6 +193,8 @@ def log_episode_to_csv(
         episode_idx,
         frame_idx,
         reward,
+        mean_reward,
+        eval_reward,
         loss if loss is not None else "",
         epsilon,
         dauer
@@ -200,10 +204,22 @@ def log_episode_to_csv(
     with open(csv_path, mode="a", newline="") as f:
         writer = csv.writer(f)
         if not file_exists or os.stat(csv_path).st_size == 0:
-            writer.writerow(["episode", "frame", "reward", "loss", "epsilon", "dauer"] + reward_names)
+            writer.writerow(["episode", "frame", "reward","mean_reward","eval_reward", "loss", "epsilon", "dauer"] + reward_names)
         writer.writerow(row)
 
-
+def evaluate(agent, envs, device, num_episodes=1):
+    eval_reward = 0.0
+    for _ in range(num_episodes):
+        obs = envs.reset()
+        done = False
+        episode_reward = 0.0
+        while not done:
+            with torch.no_grad():
+                action = agent.act(obs, epsilon=0.0, device=device)  # keine Exploration
+            obs, reward, done, info = envs.step(action)
+            episode_reward += reward
+        eval_reward += episode_reward
+    return eval_reward / num_episodes
 
 
 def get_headwise_action_mask(env, actions_shape, head_config):
@@ -507,6 +523,10 @@ class Agent:
         }
 
     def _get_structured_action_masks(self, state, device):
+        """
+        Erstellt eine strukturierte Aktionsmaske, welche angibt welche Aktionen auf welchem Grid gültig sind
+        Nach Aktionstypen aufgeschlüsselt und in PyTorch-Tensoren überführt
+        """
         raw_masks = self.env.venv.venv.get_action_mask()  # [num_envs, b*h, 78]
         grid_size = int(np.sqrt(raw_masks.shape[1]))
 
@@ -562,7 +582,8 @@ class Agent:
 
                     if len(valid_types) != 6:
                         raise ValueError(f"Ungültige Länge der Masken: {len(valid_types)} an Pos. [{i},{j},{k}]")
-
+                    print("valid", valid_types)
+                    print("Move", move_decision[i, j, k])
                     if valid_types[5] and attack_decision[i, j, k] == 1:
                         action_type_grid[i, j, k] = 5
                     elif valid_types[2] and harvest_decision[i, j, k] == 1:
@@ -572,7 +593,10 @@ class Agent:
                     elif valid_types[4] and produce_decision[i, j, k] == 1:
                         action_type_grid[i, j, k] = 4
                     elif valid_types[1] and move_decision[i, j, k] == 1:
+
                         action_type_grid[i, j, k] = 1
+                    else:
+                        action_type_grid[i,j,k]=0
                     #print("action_type_grid", action_type_grid[i,j,k])
 
 
@@ -617,15 +641,12 @@ class Agent:
                         # print("attack_params.shape:", attack_params.shape)
                         # print("Beispielwert:", attack_params[i, j, k])
                         full_action[i, j, k, 6] = attack_params[i, j, k]
-                        # print("Attack")
 
                     elif a_type == 2:
                         full_action[i, j, k, 2] = harvest_mask[i, j, k]
-                        # print("Harvest")
 
                     elif a_type == 3:
                         full_action[i, j, k, 3] = return_mask[i, j, k]
-                        # print("retuern")
 
                     elif a_type == 4:
                         #print(produce_params.dtype, produce_params.shape)
@@ -637,12 +658,8 @@ class Agent:
 
                     elif a_type == 1 :
                         full_action[i, j, k, 1] = move_params[i, j, k]
-                    # print("move")
 
-                    #print("full_action", full_action[i, j, k])
-        #print("full_action reshape shape", full_action.reshape(E, H * W * 7))
-        #print("ende Merge action", full_action.reshape(E, H * W * 7))
-        #print("zwischentes")
+
         return full_action.reshape(E, H * W * 7)
 
     def _reset(self):
@@ -655,28 +672,40 @@ class Agent:
     @torch.no_grad()
     def play_eval(self,device="cpu",epsilon=0.5):
 
-        #print("state shape", self.state.shape)
+
         full_mask = self.env.venv.venv.get_action_mask()
+        print("Full Mask:   ", full_mask.shape)
         state_v = torch.tensor(self.state, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
+        print("state v:     ", state_v.shape)
 
         """Jeder Kopf muss alle seine maximal Möglichen Aktionen machen, diese einzeln. Die beste Aktion an Merge 
         schicken, welcher die Gesamtaktion ausführt
         """
         # Berechne strukturierte Aktionsmasken
         masks = self._get_structured_action_masks(self.state, device=self.device)
-        #print("state_v shaoe", state_v.shape)
+        print("masks:       ", masks["action_type"].shape)
+
 
         # Attack
         attack_dec = self.attack_head.encoder_decision(state_v)
+        print("attack_dec:      ", attack_dec.shape)
         attack_decision_logits = self.attack_head.decision_head[0](attack_dec)
+        print("attack_decision_logits", attack_decision_logits.shape)
         attack_allowed_mask = masks["action_type"][:, 5]  # [B, H, W]
+        print("attack_allowed mask:     ", attack_allowed_mask)
         attack_decision_logits[:, 1] = attack_decision_logits[:, 1].masked_fill(attack_allowed_mask == 0, float("-inf"))
+        print("attack_decision_logits:      ", attack_decision_logits.shape)
         attack_mask = attack_decision_logits.argmax(dim=1).cpu().numpy()
+        print("attack mask:     ", attack_mask.shape)
 
         att_dir = self.attack_head.encoder_target(state_v)
+        print("att_dir:     ", att_dir)
         attack_dir_logits = self.attack_head.target_head[0](att_dir)
+        print("attack_dir_logits:       ", attack_dir_logits)
         attack_dir_masked = attack_dir_logits.masked_fill(masks["attack_dir"] == 0, float("-inf"))
+        print("attack_dir_masked:       ", attack_dir_masked)
         attack_param = attack_dir_masked.argmax(dim=1).cpu().numpy()
+        print("attack_param:    ", attack_param)
 
         # Move
         # Entscheidung
@@ -750,6 +779,7 @@ class Agent:
                                                      produce_mask,
                                                      move_mask)
         action_taken_grid = action_type_grid
+        print("action taken", action_taken_grid)
 
         """
 
@@ -956,6 +986,7 @@ class Agent:
                                                          move_mask)
             action_taken_grid = action_type_grid
 
+
             """
 
             print("attack_mask.shape:", attack_mask.shape)
@@ -1133,6 +1164,21 @@ if __name__ == "__main__":
     )
     envs = MicroRTSStatsRecorder(envs, args.gamma)
     envs = VecMonitor(envs)
+
+    eval_env = MicroRTSGridModeVecEnv(
+        num_selfplay_envs=0,
+        num_bot_envs=1,
+        partial_obs=args.partial_obs,
+        max_steps=1000,
+        render_theme=2,
+        ai2s=[microrts_ai.workerRushAI],
+        map_paths=[args.train_maps[0]],
+        reward_weight=np.array([100.0, 1.0, 40.0, -50.0, 50.0, -50.0]),
+        cycle_maps=args.train_maps
+    )
+    eval_env = VecMonitor(eval_env)
+    eval_env.seed(args.seed + 999)
+
     if args.capture_video:
         envs = VecVideoRecorder(
             envs, f"videos/{experiment_name}", record_video_trigger=lambda x: x % 100000 == 0, video_length=2000
@@ -1144,66 +1190,11 @@ if __name__ == "__main__":
         from concurrent.futures import ThreadPoolExecutor
 
         eval_executor = ThreadPoolExecutor(max_workers=args.max_eval_workers, thread_name_prefix="league-eval-")
-    """
-
-
-    obs = envs.reset()
-    expbuffer = ExperienceBuffer(100)
-    envs.render(mode="human")
-    _ = envs.venv.venv.get_action_mask()  # Initialisiere die source_unit_mask
-    agent = Agent(envs, expbuffer, device=device)
-
-
-
-    for i in range(200):
-        test = agent.play_step(epsilon=0.5)
-    print("Agent erfolgreich getestet")
-
-    print(test)
-
-    envs.venv.venv.render(mode="human")
-
-
-    #teste replay Buffer
-
-    for _ in range(200):  # ein paar Schritte generieren
-        agent.play_step( epsilon=0.5, device=device)
-
-    # Automatische Ableitung der expected_shape für actions: (H, W, 7)
-    obs_shape = envs.observation_space.shape  # z. B. (8, 8, 29)
-    grid_h, grid_w = obs_shape[:2]
-    expected_action_shape = (grid_h, grid_w, 7)
-    print(expected_action_shape)
-
-    test_replay_buffer_once(expbuffer, expected_shape=expected_action_shape, batch_size=64)
-
-
-
-
-    target_heads = {name: head for name, head in agent.heads.items()}
-    # 3. Mini-Batch ziehen
-    batch = expbuffer.sample(batch_size=64)
-
-    # 4. Loss berechnen
-    loss = agent.calc_loss(batch, target_heads)
-    print("Loss:", loss)
-
-
-    input("Drücke Enter, um die Umgebung zu schließen...")
-    """
-
-
-
-
-
-
 
 
     """
-    Training
+    Initialisierung
     """
-
-
     expbuffer = ExperienceBuffer(capacity=10000*10)
     agent = Agent(envs, expbuffer, device=device)
     #decset_decision_heads_to_prefer_one(agent)
@@ -1222,11 +1213,11 @@ if __name__ == "__main__":
     episode_idx = 0
     best_mean_reward = None
     epsilon = args.epsilon_start
-    start_time = time.time()
     log_interval = 1000
-    mean_reward = 0.0  # vor der Trainingsschleife definieren
-
-    reward_queue = deque(maxlen=100)  # Vor der Schleife
+    mean_reward = 0.0
+    reward_queue = deque(maxlen=100)
+    warmup_frames=50000
+    eval_interval=100000
 
     if not args.exp_name:
         args.exp_name = "default_exp"
@@ -1251,13 +1242,23 @@ if __name__ == "__main__":
     print("Starte Training")
 
     start_time = time.time()
-    target_heads = {name: head for name, head in agent.heads.items()}  # Zielnetz initialisieren
     sync_target_heads(agent.heads, target_heads)  # Direkt synchronisieren
     for name, head in agent.heads.items():
         torch.save(head.state_dict(), os.path.join(model_dir, f"{args.exp_name}_{name}_initial.pth"))
 
+    """
+    Training
+    """
+
     while frame_idx < args.total_timesteps:
         frame_idx += 1
+        epsilon = max(args.epsilon_final, args.epsilon_start - frame_idx / args.epsilon_decay) #linear
+        if frame_idx < warmup_frames:
+            epsilon = 1.0
+        eval_reward=0.0
+        if frame_idx % eval_interval == 0:
+            eval_reward = evaluate(agent, eval_env, device=device)
+            print(f"[EVAL] Frame {frame_idx} – Durchschnittlicher Reward: {eval_reward:.2f}")
 
 
         step_info = agent.play_step(epsilon=epsilon, device=device)
@@ -1273,16 +1274,12 @@ if __name__ == "__main__":
                 reward_counts[name] += value
         # envs.venv.venv.render(mode="human)
 
-
-
-
-
-
         if len(expbuffer) < args.batch_size:
             continue
 
         if frame_idx % args.sync_interval == 0:
-            sync_target_heads(agent.heads, target_heads)
+            for name, head in agent.heads.items():
+                torch.save(head.state_dict(), os.path.join(model_dir,f"{args.exp_name}_{name}_{frame_idx}.pth"))
 
         batch = expbuffer.sample(args.batch_size)
         optimizer.zero_grad()
@@ -1293,6 +1290,8 @@ if __name__ == "__main__":
         # Logging
         if done:
             episode_idx += 1
+            reward_queue.append(reward)  # neuen Reward in Queue einfügen
+            mean_reward = np.mean(reward_queue)  # Durchschnitt berechnen
             frame_ende=frame_idx
             dauer=frame_ende-frame_start
             frame_start=frame_idx
@@ -1305,6 +1304,8 @@ if __name__ == "__main__":
                 episode_idx=episode_idx,
                 frame_idx=frame_idx,
                 reward=reward,
+                mean_reward =mean_reward,
+                eval_reward=eval_reward,
                 loss=loss_val,
                 epsilon=epsilon,
                 dauer=dauer,
@@ -1324,9 +1325,8 @@ if __name__ == "__main__":
 
 
 
-        if frame_idx % 100000 == 0:
-            for name, head in agent.heads.items():
-                torch.save(head.state_dict(), os.path.join(model_dir,f"{args.exp_name}_{name}_{frame_idx}.pth"))
+
+
 
     for name, head in agent.heads.items():
         torch.save(head.state_dict(), os.path.join(model_dir, f"{args.exp_name}_{name}_ende.pth"))
