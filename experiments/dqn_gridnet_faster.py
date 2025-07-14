@@ -1197,7 +1197,7 @@ if __name__ == "__main__":
         render_theme=2,
         ai2s=[microrts_ai.workerRushAI],
         map_paths=[args.train_maps[0]],
-        reward_weight=np.array([100.0, 1.0, 40.0, -50.0, 50.0, -50.0]),
+        reward_weight=np.array([300.0, 1.0, 40.0, -50.0, 50.0, -50.0]),
         cycle_maps=args.train_maps
     )
     eval_env = VecMonitor(eval_env)
