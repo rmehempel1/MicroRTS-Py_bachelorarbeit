@@ -1168,14 +1168,18 @@ if __name__ == "__main__":
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
+    """
+    ([microrts_ai.passiveAI for _ in range(args.num_bot_envs // 2)] +
+          [microrts_ai.workerRushAI for _ in range(args.num_bot_envs // 2)]),
+    """
     envs = MicroRTSGridModeVecEnv(
         num_selfplay_envs=args.num_selfplay_envs,
         num_bot_envs=args.num_bot_envs,
         partial_obs=args.partial_obs,
         max_steps=2000,
         render_theme=2,
-        ai2s=([microrts_ai.passiveAI for _ in range(args.num_bot_envs // 2)] +
-              [microrts_ai.workerRushAI for _ in range(args.num_bot_envs // 2)]),
+        ai2s=[microrts_ai.passiveAI],
+
         map_paths=[args.train_maps[0]],
         reward_weight=np.array([100.0, 1.0, 40.0, -50.0, 50.0, -50.0]),
         # Win, Ressource, ProduceWorker, Produce Building, Attack, ProduceCombat Unit, (auskommentiert closer to enemy base)
@@ -1315,7 +1319,9 @@ if __name__ == "__main__":
             dauer=frame_ende-frame_start
             frame_start=frame_idx
             #print(envs.ai2s)
-            print(f"Episode: {episode_idx} Frame: {frame_idx} Reward: {reward} Loss: {loss} Epsilon: {epsilon} Dauer: {dauer}")
+            print(f"Episode: {episode_idx} Frame: {frame_idx} "
+                  f"Reward: {reward:.2f} Mean Reward: {mean_reward:.2f}  Eval Reward: {eval_reward:.2f} "
+                  f"Loss: {loss:.4f} Epsilon: {epsilon} Dauer: {dauer}")
             raw_rewards = infos.get("raw_rewards", None)
             loss_val = loss.item() if loss is not None else None
             log_episode_to_csv(
