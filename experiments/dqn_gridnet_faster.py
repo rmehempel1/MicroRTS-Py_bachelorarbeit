@@ -301,9 +301,32 @@ class ExperienceBuffer:
             next_states
         )
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+def add_positional_encoding(state):
+    """
+    Fügt jedem Zustand einen normierten x/y-Positionskanal hinzu.
+    Erwartet: state.shape = (B, H, W, C)
+    Gibt zurück: (B, H, W, C+2)
+    """
+    B, H, W, _ = state.shape
+
+    # Normierte Koordinaten
+    x_coords = np.linspace(0, 1, W)
+    y_coords = np.linspace(0, 1, H)
+
+    # Raster erzeugen
+    x_grid = np.tile(x_coords, (H, 1))        # (H, W)
+    y_grid = np.tile(y_coords[:, None], (1, W))  # (H, W)
+
+    # Zu Shape (B, H, W, 1) erweitern
+    x_grid = np.broadcast_to(x_grid, (B, H, W))
+    y_grid = np.broadcast_to(y_grid, (B, H, W))
+
+    x_grid = x_grid[..., np.newaxis]  # (B, H, W, 1)
+    y_grid = y_grid[..., np.newaxis]  # (B, H, W, 1)
+
+    # Anhängen
+    return np.concatenate([state, x_grid, y_grid], axis=-1)  # → (B, H, W, C+2)
+
 
 class MovementHead(nn.Module):
     def __init__(self, in_channels):
@@ -452,19 +475,20 @@ class Agent:
         self.env = env
         self.exp_buffer = exp_buffer
         self._reset()
+        self.in_channels=29+2
 
         self.encoder = nn.Sequential(
-            nn.Conv2d(in_channels=29, out_channels=32, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels=self.in_channels, out_channels=32, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1),
             nn.ReLU()
         ).to(self.device)
 
-        self.movement_head = MovementHead(in_channels=29).to(self.device)
-        self.harvest_head = MovementHead(in_channels=29).to(self.device)
-        self.return_head = MovementHead(in_channels=29).to(self.device)
-        self.produce_head = ProduceHead(in_channels=29).to(self.device)
-        self.attack_head = AttackHead(in_channels=29).to(self.device)
+        self.movement_head = MovementHead(in_channels=self.in_channels).to(self.device)
+        self.harvest_head = MovementHead(in_channels=self.in_channels).to(self.device)
+        self.return_head = MovementHead(in_channels=self.in_channels).to(self.device)
+        self.produce_head = ProduceHead(in_channels=self.in_channels).to(self.device)
+        self.attack_head = AttackHead(in_channels=self.in_channels).to(self.device)
 
         self.heads = {
             "attack": self.attack_head,
@@ -595,18 +619,8 @@ class Agent:
                     elif valid_types[1] and move_decision[i, j, k] == 1:
 
                         action_type_grid[i, j, k] = 1
-                    else:
-                        action_type_grid[i,j,k]=0
+                    # else action-> entfernt
                     #print("action_type_grid", action_type_grid[i,j,k])
-
-
-                    """
-                    elif valid_types[0]:
-                        action_type_grid[i, j, k] = 0
-                    """
-
-
-
         return action_type_grid
 
     def merge_actions(self,
@@ -675,7 +689,8 @@ class Agent:
 
         full_mask = self.env.venv.venv.get_action_mask()
         print("Full Mask:   ", full_mask.shape)
-        state_v = torch.tensor(self.state, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
+        enhanced_state = add_positional_encoding(self.state)
+        state_v = torch.tensor(enhanced_state, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
         print("state v:     ", state_v.shape)
 
         """Jeder Kopf muss alle seine maximal Möglichen Aktionen machen, diese einzeln. Die beste Aktion an Merge 
@@ -890,7 +905,8 @@ class Agent:
         else:
             # Zustand vorbereiten für Netzwerkeingabe
             full_mask = self.env.venv.venv.get_action_mask()
-            state_v = torch.tensor(self.state, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
+            enhanced_state = add_positional_encoding(self.state)
+            state_v = torch.tensor(enhanced_state, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
 
             """Jeder Kopf muss alle seine maximal Möglichen Aktionen machen, diese einzeln. Die beste Aktion an Merge 
             schicken, welcher die Gesamtaktion ausführt
