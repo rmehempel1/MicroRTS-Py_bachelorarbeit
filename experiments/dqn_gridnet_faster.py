@@ -1178,7 +1178,8 @@ if __name__ == "__main__":
         partial_obs=args.partial_obs,
         max_steps=2000,
         render_theme=2,
-        ai2s=[microrts_ai.passiveAI for _ in range(args.num_bot_envs)],
+        ai2s= ([microrts_ai.passiveAI for _ in range(args.num_bot_envs // 2)] +
+          [microrts_ai.workerRushAI for _ in range(args.num_bot_envs // 2)]),
 
         map_paths=[args.train_maps[0]],
         reward_weight=np.array([100.0, 1.0, 40.0, -50.0, 50.0, -50.0]),
@@ -1218,7 +1219,7 @@ if __name__ == "__main__":
     """
     Initialisierung
     """
-    expbuffer = ExperienceBuffer(capacity=10000*10)
+    expbuffer = ExperienceBuffer(capacity=10000*100)
     agent = Agent(envs, expbuffer, device=device)
     #decset_decision_heads_to_prefer_one(agent)
     total_params = sum(p.numel() for head in agent.heads.values() for p in head.parameters() if p.requires_grad)
