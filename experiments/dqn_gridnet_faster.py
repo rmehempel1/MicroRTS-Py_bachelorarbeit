@@ -796,7 +796,7 @@ class Agent:
                                                      produce_mask,
                                                      move_mask)
         action_taken_grid = action_type_grid
-        print("action taken", action_taken_grid)
+        #print("action taken", action_taken_grid)
 
         """
 
@@ -822,7 +822,7 @@ class Agent:
         torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
 
         new_state, reward, is_done, infos = self.env.step(action)
-        print("Infos (raw):", infos)
+        #print("Infos (raw):", infos)
         #print("Keys:", list(infos[0].keys()))
 
         self.total_reward += reward
