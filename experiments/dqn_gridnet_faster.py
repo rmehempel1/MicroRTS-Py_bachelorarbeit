@@ -606,8 +606,10 @@ class Agent:
 
                     if len(valid_types) != 6:
                         raise ValueError(f"Ungültige Länge der Masken: {len(valid_types)} an Pos. [{i},{j},{k}]")
+                    """
                     print("valid", valid_types)
                     print("Move", move_decision[i, j, k])
+                    """
                     if valid_types[5] and attack_decision[i, j, k] == 1:
                         action_type_grid[i, j, k] = 5
                     elif valid_types[2] and harvest_decision[i, j, k] == 1:
@@ -1025,9 +1027,7 @@ class Agent:
             # Führe Aktion aus
             torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
             new_state, reward, is_done, infos = self.env.step(action)
-            print("reward:", reward)
-            print("is_done:", is_done)
-            print("infos:", infos)
+
 
             self.total_reward += reward
 
@@ -1051,8 +1051,11 @@ class Agent:
         return {"done": False, "reward": reward[0], "infos": infos[0]}
 
     def calc_loss(self, batch, target_heads, gamma=0.99):
-        states, actions, action_taken_grid, rewards, dones, next_states = batch
         device = self.device
+        states, actions, action_taken_grid, rewards, dones, next_states = batch
+        states = add_positional_encoding(states)
+        next_states = add_positional_encoding(next_states)
+
 
         # Tensor-Konvertierung und Formatierung
         states_t = torch.tensor(states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
