@@ -1230,7 +1230,7 @@ if __name__ == "__main__":
     mean_reward = 0.0
     reward_queue = deque(maxlen=100)
     warmup_frames=100000
-    eval_interval=1000
+    eval_interval=100000
 
     if not args.exp_name:
         args.exp_name = "default_exp"
@@ -1271,7 +1271,7 @@ if __name__ == "__main__":
         eval_reward=0.0
         if frame_idx % eval_interval == 0:
             eval_reward = evaluate(agent, eval_env, device=device)
-            print(f"[EVAL] Frame {frame_idx} – Durchschnittlicher Reward: {eval_reward:.2f}")
+            print(f"[EVAL] Frame {frame_idx} Durchschnittlicher Reward: {eval_reward:.2f}")
 
 
         step_info = agent.play_step(epsilon=epsilon, device=device)
@@ -1293,7 +1293,7 @@ if __name__ == "__main__":
         if frame_idx % args.sync_interval == 0:
             sync_target_heads(agent.heads, target_heads)
 
-        if frame_idx % 100000 == 0:
+        if frame_idx % 300000 == 0:
             for name, head in agent.heads.items():
                 torch.save(head.state_dict(), f"checkpoints/{args.exp_name}_{name}_{frame_idx}.pth")
 
