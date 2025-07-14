@@ -1344,9 +1344,8 @@ if __name__ == "__main__":
                 print(f"{name}: {reward_counts[name]}")
 
                 reward_counts[name]=0
-
-            if best_mean_reward is None or best_mean_reward < mean_reward:
-                print(f"Neues bestes Ergebnis: {best_mean_reward} → {mean_reward:.2f}")
+            if frame_idx > warmup_frames and (best_mean_reward is None or mean_reward > best_mean_reward):
+                print(f"Neues bestes Ergebnis: old mean reward: {best_mean_reward:.2f} new best mean reward: {mean_reward:.2f}")
                 best_mean_reward = mean_reward
                 for name, head in agent.heads.items():
                     torch.save(head.state_dict(), os.path.join(model_dir, f"{args.exp_name}_{name}_best.pth"))
