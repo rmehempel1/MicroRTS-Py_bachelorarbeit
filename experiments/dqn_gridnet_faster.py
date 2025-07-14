@@ -546,7 +546,7 @@ class Agent:
             }
         }
 
-    def _get_structured_action_masks(self, state, device):
+    def _get_structured_action_masks(self, device):
         """
         Erstellt eine strukturierte Aktionsmaske, welche angibt welche Aktionen auf welchem Grid gültig sind
         Nach Aktionstypen aufgeschlüsselt und in PyTorch-Tensoren überführt
