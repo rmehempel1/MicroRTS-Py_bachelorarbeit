@@ -1225,7 +1225,7 @@ if __name__ == "__main__":
     total_rewards = []
     frame_idx = 0
     episode_idx = 0
-    best_mean_reward = None
+    best_mean_reward = 0.0
     epsilon = args.epsilon_start
     mean_reward = 0.0
     reward_queue = deque(maxlen=100)
