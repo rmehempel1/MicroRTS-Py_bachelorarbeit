@@ -208,18 +208,18 @@ def log_episode_to_csv(
         writer.writerow(row)
 
 def evaluate(agent, envs, device, num_episodes=1):
-    eval_reward = 0.0
+    total_reward = 0.0
+
     for _ in range(num_episodes):
-        obs = envs.reset()
+        agent._reset()  # Setzt internen Zustand zurück
         done = False
-        episode_reward = 0.0
         while not done:
-            with torch.no_grad():
-                action = agent.act(obs, epsilon=0.0, device=device)  # keine Exploration
-            obs, reward, done, info = envs.step(action)
-            episode_reward += reward
-        eval_reward += episode_reward
-    return eval_reward / num_episodes
+            result = agent.play_eval(device=device, epsilon=0.0)
+            done = result["done"]
+            if done:
+                total_reward += result["reward"]
+
+    return total_reward / num_episodes
 
 
 def get_headwise_action_mask(env, actions_shape, head_config):
@@ -690,39 +690,39 @@ class Agent:
 
 
         full_mask = self.env.venv.venv.get_action_mask()
-        print("Full Mask:   ", full_mask.shape)
+        #print("Full Mask:   ", full_mask.shape)
         enhanced_state = add_positional_encoding(self.state)
         state_v = torch.tensor(enhanced_state, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
-        print("state v:     ", state_v.shape)
+        #print("state v:     ", state_v.shape)
 
         """Jeder Kopf muss alle seine maximal Möglichen Aktionen machen, diese einzeln. Die beste Aktion an Merge 
         schicken, welcher die Gesamtaktion ausführt
         """
         # Berechne strukturierte Aktionsmasken
         masks = self._get_structured_action_masks( device=self.device)
-        print("masks:       ", masks["action_type"].shape)
+        #print("masks:       ", masks["action_type"].shape)
 
 
         # Attack
         attack_dec = self.attack_head.encoder_decision(state_v)
-        print("attack_dec:      ", attack_dec.shape)
+        #print("attack_dec:      ", attack_dec.shape)
         attack_decision_logits = self.attack_head.decision_head[0](attack_dec)
-        print("attack_decision_logits", attack_decision_logits.shape)
+        #print("attack_decision_logits", attack_decision_logits.shape)
         attack_allowed_mask = masks["action_type"][:, 5]  # [B, H, W]
-        print("attack_allowed mask:     ", attack_allowed_mask)
+        #print("attack_allowed mask:     ", attack_allowed_mask)
         attack_decision_logits[:, 1] = attack_decision_logits[:, 1].masked_fill(attack_allowed_mask == 0, float("-inf"))
-        print("attack_decision_logits:      ", attack_decision_logits.shape)
+        #print("attack_decision_logits:      ", attack_decision_logits.shape)
         attack_mask = attack_decision_logits.argmax(dim=1).cpu().numpy()
-        print("attack mask:     ", attack_mask.shape)
+        #print("attack mask:     ", attack_mask.shape)
 
         att_dir = self.attack_head.encoder_target(state_v)
-        print("att_dir:     ", att_dir)
+        #print("att_dir:     ", att_dir)
         attack_dir_logits = self.attack_head.target_head[0](att_dir)
-        print("attack_dir_logits:       ", attack_dir_logits)
+        #print("attack_dir_logits:       ", attack_dir_logits)
         attack_dir_masked = attack_dir_logits.masked_fill(masks["attack_dir"] == 0, float("-inf"))
-        print("attack_dir_masked:       ", attack_dir_masked)
+        #print("attack_dir_masked:       ", attack_dir_masked)
         attack_param = attack_dir_masked.argmax(dim=1).cpu().numpy()
-        print("attack_param:    ", attack_param)
+        #print("attack_param:    ", attack_param)
 
         # Move
         # Entscheidung
@@ -1239,7 +1239,7 @@ if __name__ == "__main__":
     mean_reward = 0.0
     reward_queue = deque(maxlen=100)
     warmup_frames=100000
-    eval_interval=100000
+    eval_interval=1000
 
     if not args.exp_name:
         args.exp_name = "default_exp"
