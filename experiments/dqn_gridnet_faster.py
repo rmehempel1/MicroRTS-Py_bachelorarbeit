@@ -1177,7 +1177,7 @@ if __name__ == "__main__":
         cycle_maps=args.train_maps
     )
     eval_env = VecMonitor(eval_env)
-    eval_env.seed(args.seed + 999)
+    #eval_env.seed(args.seed + 999)
 
     if args.capture_video:
         envs = VecVideoRecorder(
