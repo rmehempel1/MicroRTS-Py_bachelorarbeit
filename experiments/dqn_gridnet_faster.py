@@ -1172,7 +1172,7 @@ if __name__ == "__main__":
         num_selfplay_envs=args.num_selfplay_envs,
         num_bot_envs=args.num_bot_envs,
         partial_obs=args.partial_obs,
-        max_steps=1000,
+        max_steps=2000,
         render_theme=2,
         ai2s=([microrts_ai.passiveAI for _ in range(args.num_bot_envs // 2)] +
               [microrts_ai.workerRushAI for _ in range(args.num_bot_envs // 2)]),
@@ -1188,7 +1188,7 @@ if __name__ == "__main__":
         num_selfplay_envs=0,
         num_bot_envs=1,
         partial_obs=args.partial_obs,
-        max_steps=1000,
+        max_steps=2000,
         render_theme=2,
         ai2s=[microrts_ai.workerRushAI],
         map_paths=[args.train_maps[0]],
