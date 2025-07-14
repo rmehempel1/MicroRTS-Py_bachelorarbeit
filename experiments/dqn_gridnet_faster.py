@@ -1178,8 +1178,7 @@ if __name__ == "__main__":
         partial_obs=args.partial_obs,
         max_steps=2000,
         render_theme=2,
-        ai2s= ([microrts_ai.passiveAI for _ in range(args.num_bot_envs // 2)] +
-          [microrts_ai.workerRushAI for _ in range(args.num_bot_envs // 2)]),
+        ai2s= [microrts_ai.passiveAI for _ in range(args.num_bot_envs)],
 
         map_paths=[args.train_maps[0]],
         reward_weight=np.array([300.0, 10.0, 40.0, -100.0, 50.0, -100.0]),
