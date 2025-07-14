@@ -175,7 +175,6 @@ import csv
 
 def log_episode_to_csv(
     csv_path: str,
-    env_idx: int,
     episode_idx: int,
     frame_idx: int,
     reward: float,
@@ -191,7 +190,6 @@ def log_episode_to_csv(
     Schreibt eine abgeschlossene Episode in eine CSV-Datei.
     """
     row = [
-        env_idx,
         episode_idx,
         frame_idx,
         reward,
@@ -206,7 +204,7 @@ def log_episode_to_csv(
     with open(csv_path, mode="a", newline="") as f:
         writer = csv.writer(f)
         if not file_exists or os.stat(csv_path).st_size == 0:
-            writer.writerow(["env_idx","episode", "frame", "reward","mean_reward","eval_reward", "loss", "epsilon", "dauer"] + reward_names)
+            writer.writerow(["episode", "frame", "reward","mean_reward","eval_reward", "loss", "epsilon", "dauer"] + reward_names)
         writer.writerow(row)
 
 def evaluate(agent, envs, device, num_episodes=1):
@@ -1259,7 +1257,7 @@ if __name__ == "__main__":
         "ProduceCombatUnitReward"
     ]
     reward_counts = {name: 0 for name in reward_names}
-    frame_start_per_env = [0] * envs.num_envs
+    frame_start=0
     csv_dir = "./csv"
     os.makedirs(csv_dir, exist_ok=True)
     csv_path=f"./csv/{args.exp_name}.csv"
@@ -1316,48 +1314,41 @@ if __name__ == "__main__":
         optimizer.step()
 
         # Logging
-        print(f"done type: {type(done)}, value: {done}")
-        for env_idx, done_flag in enumerate(done):
-            if done_flag:
-                episode_idx += 1
-                reward_i = reward[env_idx]
-                raw_rewards_i = infos["raw_rewards"][env_idx]
-                loss_val = loss.item() if loss is not None else None
+        if done:
+            episode_idx += 1
+            reward_queue.append(reward)  # neuen Reward in Queue einfügen
+            mean_reward = np.mean(reward_queue)  # Durchschnitt berechnen
+            frame_ende=frame_idx
+            dauer=frame_ende-frame_start
+            frame_start=frame_idx
+            #print(envs.ai2s)
+            print(f"Episode: {episode_idx} Frame: {frame_idx} "
+                  f"Reward: {reward:.2f} Mean Reward: {mean_reward:.2f}  Eval Reward: {eval_reward:.2f} "
+                  f"Loss: {loss:.4f} Epsilon: {epsilon} Dauer: {dauer}")
+            raw_rewards = infos.get("raw_rewards", None)
+            loss_val = loss.item() if loss is not None else None
+            log_episode_to_csv(
+                csv_path=csv_path,
+                episode_idx=episode_idx,
+                frame_idx=frame_idx,
+                reward=reward,
+                mean_reward =mean_reward,
+                eval_reward=eval_reward,
+                loss=loss_val,
+                epsilon=epsilon,
+                dauer=dauer,
+                reward_counts=reward_counts,
+                reward_names=reward_names
+            )
+            for name, value in zip(reward_names, raw_rewards):
+                print(f"{name}: {reward_counts[name]}")
 
-                reward_queue.append(reward_i)
-                mean_reward = np.mean(reward_queue)
-
-                dauer = frame_idx - frame_start_per_env[env_idx]
-                frame_start_per_env[env_idx] = frame_idx
-
-                print(f"[Env {env_idx}] Episode: {episode_idx} Frame: {frame_idx} "
-                      f"Reward: {reward_i:.2f} Mean Reward: {mean_reward:.2f} Eval Reward: {eval_reward:.2f} "
-                      f"Loss: {loss_val:.4f} Epsilon: {epsilon} Dauer: {dauer}")
-
-                log_episode_to_csv(
-                    csv_path=csv_path,
-                    episode_idx=episode_idx,
-                    frame_idx=frame_idx,
-                    reward=reward_i,
-                    mean_reward=mean_reward,
-                    eval_reward=eval_reward,
-                    loss=loss_val,
-                    epsilon=epsilon,
-                    dauer=dauer,
-                    reward_counts={name: raw_rewards_i[idx] for idx, name in enumerate(reward_names)},
-                    reward_names=reward_names
-                )
-
-                for name, value in zip(reward_names, raw_rewards_i):
-                    print(f"{name}: {value}")
-                for name, value in zip(reward_names, raw_rewards):
-                    print(f"{name}: {reward_counts[name]}")
-                    reward_counts[name]=0
-                if frame_idx > warmup_frames and (best_mean_reward is None or mean_reward > best_mean_reward):
-                    print(f"Neues bestes Ergebnis: old mean reward: {best_mean_reward:.2f} new best mean reward: {mean_reward:.2f}")
-                    best_mean_reward = mean_reward
-                    for name, head in agent.heads.items():
-                        torch.save(head.state_dict(), os.path.join(model_dir, f"{args.exp_name}_{name}_best.pth"))
+                reward_counts[name]=0
+            if frame_idx > warmup_frames and (best_mean_reward is None or mean_reward > best_mean_reward):
+                print(f"Neues bestes Ergebnis: old mean reward: {best_mean_reward:.2f} new best mean reward: {mean_reward:.2f}")
+                best_mean_reward = mean_reward
+                for name, head in agent.heads.items():
+                    torch.save(head.state_dict(), os.path.join(model_dir, f"{args.exp_name}_{name}_best.pth"))
 
 
 
