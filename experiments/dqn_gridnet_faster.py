@@ -699,7 +699,7 @@ class Agent:
         schicken, welcher die Gesamtaktion ausführt
         """
         # Berechne strukturierte Aktionsmasken
-        masks = self._get_structured_action_masks(self.state, device=self.device)
+        masks = self._get_structured_action_masks( device=self.device)
         print("masks:       ", masks["action_type"].shape)
 
 
@@ -914,7 +914,7 @@ class Agent:
             schicken, welcher die Gesamtaktion ausführt
             """
             # Berechne strukturierte Aktionsmasken
-            masks = self._get_structured_action_masks(self.state, device=self.device)
+            masks = self._get_structured_action_masks(device=self.device)
             # print("state_v shaoe", state_v.shape)
 
             # Attack
