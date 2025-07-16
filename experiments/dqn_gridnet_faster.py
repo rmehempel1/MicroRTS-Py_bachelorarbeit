@@ -1047,7 +1047,6 @@ class Agent:
         states = add_positional_encoding(states)
         next_states = add_positional_encoding(next_states)
 
-
         # Tensor-Konvertierung und Formatierung
         states_t = torch.tensor(states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
         next_states_t = torch.tensor(next_states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
