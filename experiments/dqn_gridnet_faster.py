@@ -107,6 +107,12 @@ def parse_args():
                         help='the list of maps used during training')
     parser.add_argument('--eval-maps', nargs='+', default=["maps/8x8/basesWorkers8x8.xml"],
                         help='the list of maps used during evaluation')
+    parser.add_argument('--max-steps', type=int, default=2000,
+                        help='maximale Anzahl Schritte pro Spiel')
+    parser.add_argument('--warmup-frames', type=int, default=100000,
+                        help="Anzahl der Schritte mit ausschließlich Exploration")
+    parser.add_argument("--buffer-memory", type=int, default=1000000,
+                        help="Größe des speichers für den Replay Buffer")
 
     args = parser.parse_args()
     if not args.seed:
@@ -691,7 +697,11 @@ class Agent:
 
         full_mask = self.env.venv.venv.get_action_mask()
         #print("Full Mask:   ", full_mask.shape)
+        print("state:    ", self.state.shape)
+        print("State c(2,2):     ", self.state[0,1,1,:] )
         enhanced_state = add_positional_encoding(self.state)
+        print("enhanced state:  ", enhanced_state.shape)
+        print("enhanced state c(2,2):    ", enhanced_state[0,1,1,:])
         state_v = torch.tensor(enhanced_state, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
         #print("state v:     ", state_v.shape)
 
@@ -1065,8 +1075,9 @@ class Agent:
             if not mask.any():
                 continue
 
-            out = head(states_t)
-            tgt = target_heads[name](next_states_t)
+            # Netzwerkausgaben für aktuellen und nächsten Zustand
+            out = head(states_t)  # aktuelles Netz → für Auswahl
+            tgt = target_heads[name](next_states_t)  # Zielnetz → für Bewertung
 
             if name == "produce":
                 dir_idx, type_idx = cfg["indices"][1], cfg["indices"][2]
@@ -1079,9 +1090,13 @@ class Agent:
                 q_dec = out[0].gather(1, act_dec.unsqueeze(1)).squeeze(1)
                 q_type = out[2].gather(1, act_types.unsqueeze(1)).squeeze(1)
 
-                tgt_dec = tgt[0].max(1).values
-                tgt_dir = tgt[1].max(1).values
-                tgt_type = tgt[2].max(1).values
+                # Double DQN – Auswahl mit aktuellem Netz, Bewertung mit Target
+                a_max_dir = out[1].argmax(1, keepdim=True)
+                a_max_type = out[2].argmax(1, keepdim=True)
+
+                tgt_dec = tgt[0].max(1).values  # Entscheidung ist binär – kein Double DQN nötig
+                tgt_dir = tgt[1].gather(1, a_max_dir).squeeze(1)
+                tgt_type = tgt[2].gather(1, a_max_type).squeeze(1)
 
                 q_preds += [q_dec[mask], q_dir[mask], q_type[mask]]
                 q_tgts += [
@@ -1098,8 +1113,11 @@ class Agent:
                 q_dec = out[0].gather(1, act_dec.unsqueeze(1)).squeeze(1)
                 q = out[1].gather(1, act_param.unsqueeze(1)).squeeze(1)
 
-                tgt_q_dec = tgt[0].max(1).values
-                tgt_q = tgt[1].max(1).values
+                # Double DQN
+                a_max = out[1].argmax(1, keepdim=True)
+                tgt_q = tgt[1].gather(1, a_max).squeeze(1)
+
+                tgt_q_dec = tgt[0].max(1).values  # binäre Entscheidung
 
                 q_preds += [q_dec[mask], q[mask]]
                 q_tgts += [
@@ -1151,7 +1169,7 @@ if __name__ == "__main__":
 
     # TRY NOT TO MODIFY: seeding
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
-
+    print("PID: ", os.getpid())
     print(f"Device: {device}")
 
     random.seed(args.seed)
@@ -1162,16 +1180,18 @@ if __name__ == "__main__":
     ([microrts_ai.passiveAI for _ in range(args.num_bot_envs // 2)] +
           [microrts_ai.workerRushAI for _ in range(args.num_bot_envs // 2)]),
     """
+    reward_weights = np.array([100.0, 1.0, 10.0, -100.0, 10.0, -100.0])
+    print("Reward Weights:", reward_weights)
     envs = MicroRTSGridModeVecEnv(
         num_selfplay_envs=args.num_selfplay_envs,
         num_bot_envs=args.num_bot_envs,
         partial_obs=args.partial_obs,
-        max_steps=2000,
+        max_steps=args.max_steps,
         render_theme=2,
         ai2s= [microrts_ai.passiveAI for _ in range(args.num_bot_envs)],
 
         map_paths=[args.train_maps[0]],
-        reward_weight=np.array([300.0, 10.0, 40.0, -100.0, 50.0, -100.0]),
+        reward_weight=reward_weights,
         # Win, Ressource, ProduceWorker, Produce Building, Attack, ProduceCombat Unit, (auskommentiert closer to enemy base)
         cycle_maps=args.train_maps,
     )
@@ -1182,11 +1202,11 @@ if __name__ == "__main__":
         num_selfplay_envs=0,
         num_bot_envs=1,
         partial_obs=args.partial_obs,
-        max_steps=2000,
+        max_steps=args.max_steps,
         render_theme=2,
         ai2s=[microrts_ai.passiveAI for _ in range(args.num_bot_envs)],
         map_paths=[args.train_maps[0]],
-        reward_weight=np.array([300.0, 10.0, 40.0, -100.0, 50.0, -100.0]),
+        reward_weight=reward_weights,
         cycle_maps=args.train_maps
     )
     eval_env = VecMonitor(eval_env)
@@ -1208,7 +1228,7 @@ if __name__ == "__main__":
     """
     Initialisierung
     """
-    expbuffer = ExperienceBuffer(capacity=10000*100)
+    expbuffer = ExperienceBuffer(capacity=args.buffer_memory)
     agent = Agent(envs, expbuffer, device=device)
     #decset_decision_heads_to_prefer_one(agent)
     total_params = sum(p.numel() for head in agent.heads.values() for p in head.parameters() if p.requires_grad)
@@ -1252,6 +1272,7 @@ if __name__ == "__main__":
     csv_path=f"./csv/{args.exp_name}.csv"
     print(csv_path)
     print("Starte Training")
+    print("Learning Rate: ", args.learning_rate)
 
     start_time = time.time()
     sync_target_heads(agent.heads, target_heads)  # Direkt synchronisieren
