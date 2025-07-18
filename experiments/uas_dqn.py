@@ -170,38 +170,58 @@ class UASDQN(nn.Module):
     def __init__(self, input_shape):
         super().__init__()
         c, h, w = input_shape
+
+        self.input_height = h
+        self.input_width = w
+
         self.encoder = nn.Sequential(
-            nn.Conv2d(c, c*2, kernel_size=3, padding=1),
+            nn.Conv2d(c, c * 2, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.Conv2d(c*2, c*2, kernel_size=3, padding=1),
+            nn.Conv2d(c * 2, c * 2, kernel_size=3, padding=1),
             nn.ReLU()
         )
 
-        self.heads = nn.ModuleList([
-            nn.Linear(512, 6),  # action type
-            nn.Linear(512, 4),  # move_dir
-            nn.Linear(512, 4),  # harvest_dir
-            nn.Linear(512, 4),  # return_dir
-            nn.Linear(512, 7),  # produce_type
-            nn.Linear(512, 49), # attack_dir
-        ])
+        conv_out_size = self._get_conv_out((c, h, w))
 
-        conv_out_size = self._get_conv_out(input_shape)
+        # ⚠️ +2 für (x, y) Position
         self.fc = nn.Sequential(
-            nn.Linear(conv_out_size, 512),
+            nn.Linear(conv_out_size + 2, 512),
             nn.ReLU(),
             nn.Linear(512, 512)
         )
 
-    def forward(self, x):
-        x = self.encoder(x).reshape(x.size(0), -1)
+        self.heads = nn.ModuleList([
+            nn.Linear(512, 6),   # action type
+            nn.Linear(512, 4),   # move_dir
+            nn.Linear(512, 4),   # harvest_dir
+            nn.Linear(512, 4),   # return_dir
+            nn.Linear(512, 7),   # produce_type
+            nn.Linear(512, 49),  # attack_dir
+        ])
+
+    def forward(self, x, unit_pos=None):
+        # x: [B, C, H, W]
+        batch_size = x.size(0)
+        x = self.encoder(x).reshape(batch_size, -1)
+
+        if unit_pos is None:
+            # Standard: keine Positionsinfo
+            pos = torch.zeros((batch_size, 2), device=x.device)
+        else:
+            # Normalisiere Position auf [0, 1]
+            norm_x = unit_pos[:, 0].float() / (self.input_width - 1)
+            norm_y = unit_pos[:, 1].float() / (self.input_height - 1)
+            pos = torch.stack([norm_x, norm_y], dim=1)  # [B, 2]
+
+        x = torch.cat([x, pos], dim=1)
         fc_out = self.fc(x)
         out = [head(fc_out) for head in self.heads]
-        return out  # Liste: [Q_action_type, Q_move_dir, ...]
+        return out
 
     def _get_conv_out(self, shape):
         o = self.encoder(torch.zeros(1, *shape))
         return int(np.prod(o.size()))
+
 
 class ReplayBuffer:
     def __init__(self, capacity, state_shape, action_shape):
@@ -209,39 +229,26 @@ class ReplayBuffer:
         self.state_shape = state_shape
         self.action_shape = action_shape
 
-    def append(self, state, action, reward, done, next_state):
-        """
-        Fügt eine Transition zum Puffer hinzu.
-        Erwartet:
-        - state, next_state: [H, W, C] oder [num_envs, H, W, C]
-        - action: [H, W, 7]
-        - reward: float oder [H, W]
-        - done: bool oder [H, W]
-        """
-        self.buffer.append((state, action, reward, done, next_state))
+    def append(self, state, action, reward, done, next_state, unit_pos):
+        self.buffer.append((state, action, reward, done, next_state, unit_pos))
 
     def __len__(self):
         return len(self.buffer)
 
     def sample(self, batch_size):
-        """
-        Gibt einen Batch zufälliger Transitionen als Tupel von Arrays zurück:
-        - states: [B, ...]
-        - actions: [B, ...]
-        - rewards: [B, ...]
-        - dones: [B, ...]
-        - next_states: [B, ...]
-        """
         indices = np.random.choice(len(self.buffer), batch_size, replace=False)
-        states, actions, rewards, dones, next_states = zip(*[self.buffer[idx] for idx in indices])
+        samples = [self.buffer[idx] for idx in indices]
 
-        states = np.array(states, copy=False)            # Shape: [B, H, W, C]
-        actions = np.array(actions, copy=False)          # Shape: [B, H, W, 7]
-        rewards = np.array(rewards, copy=False)          # Shape: [B, H, W] oder [B]
-        dones = np.array(dones, copy=False)              # Shape: [B, H, W] oder [B]
-        next_states = np.array(next_states, copy=False)  # Shape: [B, H, W, C]
+        states, actions, rewards, dones, next_states, unit_positions = zip(*samples)
 
-        return states, actions, rewards, dones, next_states
+        states = np.array(states, copy=False)  # [B, H, W, C]
+        actions = np.array(actions, copy=False)  # [B, 7]
+        rewards = np.array(rewards, copy=False)  # [B]
+        dones = np.array(dones, copy=False)  # [B]
+        next_states = np.array(next_states, copy=False)  # [B, H, W, C]
+        unit_positions = np.array(unit_positions, copy=False)  # [B, 2]
+
+        return states, actions, rewards, dones, next_states, unit_positions
 
 class Agent:
     def __init__(self, env, exp_buffer, net, device="cpu"):
@@ -318,10 +325,12 @@ class Agent:
                 for i in range(h):
                     for j in range(w):
                         if self.state[env_i,i,j,10]==1 and self.state[env_i,i,j,21]==0: #eiugen Einheit und keine Action
+
                             state_a = np.array([self.state], copy=False)  # [1, H, W, C]
                             state_a = np.transpose(state_a, (0, 3, 1, 2))  # ➜ [1, C, H, W]
                             state_v = torch.tensor(state_a, dtype=torch.float32, device=device)
-                            q_vals_v = net(state_v)
+                            unit_pos = torch.tensor([[j, i]], dtype=torch.float32, device=device)  # [B, 2]
+                            q_vals_v = net(state_v, unit_pos=unit_pos)
 
                             # Maske für action_type (NONE, MOVE, ..., ATTACK) auf Zelle [env_i,i,j]
                             mask = torch.tensor(raw_masks[e, flat_index, 0:6], dtype=torch.bool,device=q_vals_v[0].device)
@@ -388,13 +397,18 @@ class Agent:
 
         self.total_reward += reward
         for i in range(self.env.num_envs):
-            self.exp_buffer.append(
-                self.state[i],
-                full_action[i],
-                reward[i],
-                is_done[i],
-                new_state[i]
-            )
+            for i in range(h):
+                for j in range(w):
+                    if self.state[env_i, i, j, 10] == 1 and self.state[env_i, i, j, 21] == 0:
+                        single_action = full_action[env_i, i, j]  # [7]
+                        self.exp_buffer.append(
+                            self.state[env_i],  # [H, W, C]
+                            single_action,  # [7]
+                            reward[env_i],  # float
+                            is_done[env_i],  # bool
+                            new_state[env_i],  # [H, W, C]
+                            (j, i)  # unit_pos (x, y)
+                        )
 
 
         self.state = new_state
@@ -405,39 +419,35 @@ class Agent:
         return {"done": False, "reward": reward[0], "infos": infos[0]}
 
     def calc_loss(self, batch, tgt_net, gamma):
-        # Entpacke Batch
-        net = self.net
-        states, actions, rewards, dones, next_states = batch
+        states, actions, rewards, dones, next_states, unit_positions = batch
 
-        # [B, H, W, C] -> [B, C, H, W]
-        states_v = torch.tensor(states, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
-        next_states_v = torch.tensor(next_states, dtype=torch.float32, device=self.device).permute(0, 3, 1, 2)
+        device = self.device
+        B = len(states)
 
-        actions_v = torch.tensor(actions, dtype=torch.int64, device=self.device)  # [B, H, W, 7]
-        rewards_v = torch.tensor(rewards, dtype=torch.float32, device=self.device)  # [B]
-        done_mask = torch.tensor(dones, dtype=torch.bool, device=self.device)  # [B]
+        # [B, C, H, W]
+        states_v = torch.tensor(states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
+        next_states_v = torch.tensor(next_states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
+        actions_v = torch.tensor(actions, dtype=torch.int64, device=device)  # [B, 7]
+        rewards_v = torch.tensor(rewards, dtype=torch.float32, device=device)  # [B]
+        done_mask = torch.tensor(dones, dtype=torch.bool, device=device)  # [B]
+        unit_pos = torch.tensor(unit_positions, dtype=torch.long, device=device)  # [B, 2] (x, y)
 
-        # Netzwerk-Outputs
-        state_qvals = net(states_v)  # Liste von 7 Tensors: [B, H, W, num_actions_per_head]
-        next_state_qvals = tgt_net(next_states_v)
+        # Q-Werte nur für relevante Einheiten berechnen
+        qvals = self.net(states_v, unit_pos=unit_pos)  # Liste: [B, num_actions] je Head
+        qvals_next = tgt_net(next_states_v, unit_pos=unit_pos)
 
         total_loss = 0.0
-
-        for head_idx in range(len(state_qvals)):
-            head_actions = actions_v[..., head_idx]
-            # Q-Werte für gewählte Aktionen
-            qval = state_qvals[head_idx].gather(-1, head_actions.unsqueeze(-1)).squeeze(-1)  # [B, H, W]
-            # Max-Q aus Zielnetz (Double-Q optional)
+        for head_idx in range(len(qvals)):
+            qval = qvals[head_idx].gather(1, actions_v[:, head_idx].unsqueeze(1)).squeeze(1)
             with torch.no_grad():
-                next_qval = next_state_qvals[head_idx].max(-1).values  # [B, H, W]
+                next_qval = qvals_next[head_idx].max(1).values
                 next_qval[done_mask] = 0.0
                 q_target = rewards_v + gamma * next_qval
-            # Loss pro Head
+
             loss = F.smooth_l1_loss(qval, q_target)
             total_loss += loss
 
         return total_loss
-
 
 
 def log_episode_to_csv(
