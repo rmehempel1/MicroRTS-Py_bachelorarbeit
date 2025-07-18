@@ -313,6 +313,8 @@ class Agent:
                         full_action[env_i, i, j, 6] = sample_valid(cell_mask[29:78])
 
             full_action = full_action.reshape(self.env.num_envs, -1)
+            torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
+            new_state, reward, is_done, infos = self.env.step(full_action)
 
         else:
             full_action=np.zeros((h, w, 7), dtype=np.int32)
@@ -396,8 +398,8 @@ class Agent:
                                 attack_target = torch.argmax(masked_logits).item()
                                 full_action[env_i,i,j, 6] = attack_target
 
-        torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
-        new_state, reward, is_done, infos = self.env.step(full_action)
+            torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
+            new_state, reward, is_done, infos = self.env.step(full_action)
 
         self.total_reward += reward
         for env_i in range(self.env.num_envs):
