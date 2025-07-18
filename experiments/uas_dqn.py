@@ -275,7 +275,7 @@ class Agent:
         raw_masks = self.env.venv.venv.get_action_mask()  # [num_envs, H*W, 78]
         e, h, w, _ = self.state.shape
         grid_size = int(np.sqrt(raw_masks.shape[1]))
-        flat_index = h * grid_size + w
+
 
 
 
@@ -330,6 +330,7 @@ class Agent:
                             q_vals_v = net(state_v, unit_pos=unit_pos)
 
                             # Maske für action_type (NONE, MOVE, ..., ATTACK) auf Zelle [env_i,i,j]
+                            flat_index = i * grid_size + j
                             mask = torch.tensor(raw_masks[e, flat_index, 0:6], dtype=torch.bool,device=q_vals_v[0].device)
                             logits = q_vals_v[0][env_i,i,j]                       # Q-Werte der Zelle extrahieren
                             masked_logits = logits.masked_fill(~mask, -1e9)     # Ungültige Werte maskieren
@@ -341,6 +342,7 @@ class Agent:
                                 pass
 
                             elif action_type == 1:  # MOVE (6:10)
+                                flat_index = i * grid_size + j
                                 mask = torch.tensor(raw_masks[e, flat_index, 6:10], dtype=torch.bool,
                                                     device=q_vals_v[1].device)
                                 logits = q_vals_v[1][env_i,i,j]
@@ -349,6 +351,7 @@ class Agent:
                                 full_action[env_i,i,j, 1] = move_dir
 
                             elif action_type == 2:  # HARVEST (10:14)
+                                flat_index = i * grid_size + j
                                 mask = torch.tensor(raw_masks[e, flat_index, 10:14], dtype=torch.bool,
                                                     device=q_vals_v[2].device)
                                 logits = q_vals_v[2][env_i,i,j]
@@ -357,6 +360,7 @@ class Agent:
                                 full_action[env_i,i,j, 2] = harvest_dir
 
                             elif action_type == 3:  # RETURN (14:18)
+                                flat_index = i * grid_size + j
                                 mask = torch.tensor(raw_masks[e, flat_index, 14:18], dtype=torch.bool,
                                                     device=q_vals_v[3].device)
                                 logits = q_vals_v[3][env_i,i,j]
@@ -366,6 +370,7 @@ class Agent:
 
                             elif action_type == 4:  # PRODUCE
                                 # Direction (18:22)
+                                flat_index = i * grid_size + j
                                 mask = torch.tensor(raw_masks[e, flat_index, 18:22], dtype=torch.bool,
                                                     device=q_vals_v[4].device)
                                 logits = q_vals_v[4][env_i,i,j]
@@ -374,6 +379,7 @@ class Agent:
                                 full_action[env_i,i,j, 4] = produce_dir
 
                                 # Unit-Type (22:29)
+                                flat_index = i * grid_size + j
                                 mask = torch.tensor(raw_masks[e, flat_index, 22:29], dtype=torch.bool,
                                                     device=q_vals_v[5].device)
                                 logits = q_vals_v[5][env_i,i,j]
@@ -382,6 +388,7 @@ class Agent:
                                 full_action[env_i,i,j, 5] = produce_type
 
                             elif action_type == 5:  # ATTACK (29:78)
+                                flat_index = i * grid_size + j
                                 mask = torch.tensor(raw_masks[e, flat_index, 29:78], dtype=torch.bool,
                                                     device=q_vals_v[6].device)
                                 logits = q_vals_v[6][env_i,i,j]
