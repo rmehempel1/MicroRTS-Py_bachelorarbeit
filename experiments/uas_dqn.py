@@ -392,8 +392,8 @@ class Agent:
                                 attack_target = torch.argmax(masked_logits).item()
                                 full_action[env_i,i,j, 6] = attack_target
 
-            torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
-            new_state, reward, is_done, infos = self.env.step(full_action)
+        torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
+        new_state, reward, is_done, infos = self.env.step(full_action)
 
         self.total_reward += reward
         for i in range(self.env.num_envs):
