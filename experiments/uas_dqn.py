@@ -695,7 +695,10 @@ if __name__ == "__main__":
 
             # Bestes Modell speichern
             if frame_idx > warmup_frames and (best_mean_reward is None or mean_reward > best_mean_reward):
-                print(f"Neues bestes Ergebnis: old mean reward: {best_mean_reward:.2f} new: {mean_reward:.2f}")
+                print(
+                    f"Neues bestes Ergebnis: old mean reward: {best_mean_reward:.2f}" if best_mean_reward is not None else "old mean reward: None",
+                    f"new: {mean_reward:.2f}" if mean_reward is not None else "new: None")
+
                 best_mean_reward = mean_reward
                 torch.save(policy_net.state_dict(), os.path.join(model_dir, f"{args.exp_name}_best.pth"))
 
