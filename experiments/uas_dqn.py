@@ -313,10 +313,7 @@ class Agent:
                         full_action[env_i, i, j, 6] = sample_valid(cell_mask[29:78])
 
             full_action = full_action.reshape(self.env.num_envs, -1)
-            # Führe Aktion aus
-            torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
-            new_state, reward, is_done, infos = self.env.step(full_action)
-            self.total_reward += reward
+
         else:
             full_action=np.zeros((h, w, 7), dtype=np.int32)
 
@@ -396,7 +393,7 @@ class Agent:
         new_state, reward, is_done, infos = self.env.step(full_action)
 
         self.total_reward += reward
-        for i in range(self.env.num_envs):
+        for env_i in range(self.env.num_envs):
             for i in range(h):
                 for j in range(w):
                     if self.state[env_i, i, j, 10] == 1 and self.state[env_i, i, j, 21] == 0:
