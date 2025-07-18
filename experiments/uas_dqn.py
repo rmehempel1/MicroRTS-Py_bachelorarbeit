@@ -66,7 +66,7 @@ def parse_args():
                         help='if toggled, the game will have partial observability')
     parser.add_argument('--n-minibatch', type=int, default=4,
                         help='the number of mini batch')
-    parser.add_argument('--num-bot-envs', type=int, default=4,
+    parser.add_argument('--num-bot-envs', type=int, default=1,
                         help='the number of bot game environment; 16 bot envs means 16 games')
     parser.add_argument('--num-selfplay-envs', type=int, default=0,
                         help='the number of self play envs; 16 self play envs means 8 games')
@@ -311,10 +311,25 @@ class Agent:
                         full_action[env_i, i, j, 5] = sample_valid(cell_mask[22:29])
                     elif a_type == 5:  # Attack
                         full_action[env_i, i, j, 6] = sample_valid(cell_mask[29:78])
-
+            full_action_raw = full_action.copy()
             full_action = full_action.reshape(self.env.num_envs, -1)
             torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
             new_state, reward, is_done, infos = self.env.step(full_action)
+            for env_i in range(self.env.num_envs):
+                for i in range(grid_size):
+                    for j in range(grid_size):
+                        print("state: ", self.state.shape)
+                        print(f"{i},{j}, Einheit: {self.state[env_i, i, j, 11]}/{self.state[env_i,i,j,21]}")
+                        if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
+                            single_action = full_action_raw[env_i, i, j]  # [7]
+                            self.exp_buffer.append(
+                                self.state[env_i],  # Zustand
+                                single_action,  # Aktion für diese Unit
+                                reward[env_i],  # Belohnung
+                                is_done[env_i],  # Done-Status
+                                new_state[env_i],  # Neuer Zustand
+                                (j, i)  # Position (x, y)
+                            )
 
         else:
             full_action=np.zeros((h, w, 7), dtype=np.int32)
@@ -323,7 +338,8 @@ class Agent:
             for env_i in range(e):
                 for i in range(h):
                     for j in range(w):
-                        if self.state[env_i,i,j,10]==1 and self.state[env_i,i,j,21]==0: #eiugen Einheit und keine Action
+                        print(f"{i},{j}, EInheit: {self.state[env_i,i,j,10]}")
+                        if self.state[env_i,i,j,11]==1 and self.state[env_i,i,j,21]==1: #eiugen Einheit und keine Action
 
                             state_a = np.array([self.state], copy=False)  # [1, H, W, C]
                             state_a = np.transpose(state_a, (0, 3, 1, 2))  # ➜ [1, C, H, W]
@@ -399,30 +415,32 @@ class Agent:
                                 full_action[env_i,i,j, 6] = attack_target
 
             torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
+            print("full_action: ", full_action.shape)
             new_state, reward, is_done, infos = self.env.step(full_action)
 
-        self.total_reward += reward
-        for env_i in range(self.env.num_envs):
-            for i in range(h):
-                for j in range(w):
-                    if self.state[env_i, i, j, 10] == 1 and self.state[env_i, i, j, 21] == 0:
-                        single_action = full_action[env_i, i, j]  # [7]
-                        self.exp_buffer.append(
-                            self.state[env_i],  # [H, W, C]
-                            single_action,  # [7]
-                            reward[env_i],  # float
-                            is_done[env_i],  # bool
-                            new_state[env_i],  # [H, W, C]
-                            (j, i)  # unit_pos (x, y)
-                        )
+            self.total_reward += reward
+            for env_i in range(self.env.num_envs):
+                for i in range(h):
+                    for j in range(w):
+                        if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
+                            single_action = full_action[env_i, i, j]  # [7]
+                            self.exp_buffer.append(
+                                self.state[env_i],  # [H, W, C]
+                                single_action,  # [7]
+                                reward[env_i],  # float
+                                is_done[env_i],  # bool
+                                new_state[env_i],  # [H, W, C]
+                                (j, i)  # unit_pos (x, y) #hatte auch irgendein Grund das zu vertauschen
+                            )
 
 
         self.state = new_state
+        """unterstützt aktuell nur eine Umgebung"""
         if np.any(is_done):
             done_reward = self.total_reward
             self._reset()
-            return {"done": True, "reward": done_reward[0], "infos": infos[0]}
-        return {"done": False, "reward": reward[0], "infos": infos[0]}
+            return {"done": True, "reward": done_reward, "infos": infos[0]}
+        return {"done": False, "reward": reward, "infos": infos[0]}
 
     def calc_loss(self, batch, tgt_net, gamma):
         states, actions, rewards, dones, next_states, unit_positions = batch
@@ -652,8 +670,11 @@ if __name__ == "__main__":
             print(f"[EVAL] Frame {frame_idx} Durchschnittlicher Reward: {eval_reward:.2f}")
 
         # Schritt ausführen
+        #print("frame:" ,frame_idx)
         step_info = agent.play_step(epsilon=epsilon)
+        envs.venv.venv.render(mode="human")
         done = step_info["done"]
+        print("done: ", done)
         reward = step_info["reward"]
         infos = step_info["infos"]
         raw_rewards = infos.get("raw_rewards", None)
@@ -662,6 +683,7 @@ if __name__ == "__main__":
             reward_counts[name] += value
 
         if len(expbuffer) < args.batch_size:
+            print("buffer: ", len(expbuffer))
             continue
 
         # Target-Sync
@@ -680,8 +702,11 @@ if __name__ == "__main__":
         optimizer.step()
 
         # Logging
+
+        print("done vor if: ", done)
         if done:
             episode_idx += 1
+            print("episode: ", episode_idx)
             reward_queue.append(reward)
             mean_reward = np.mean(reward_queue)
             dauer = frame_idx - frame_start
