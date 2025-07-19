@@ -672,7 +672,7 @@ if __name__ == "__main__":
         # Schritt ausführen
         #print("frame:" ,frame_idx)
         step_info = agent.play_step(epsilon=epsilon)
-        envs.venv.venv.render(mode="human")
+        #envs.venv.venv.render(mode="human")
         done = step_info["done"]
         #print("done: ", done)
         reward = step_info["reward"]
