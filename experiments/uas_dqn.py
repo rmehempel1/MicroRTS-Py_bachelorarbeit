@@ -318,9 +318,8 @@ class Agent:
             for env_i in range(self.env.num_envs):
                 for i in range(grid_size):
                     for j in range(grid_size):
-                        print("state: ", self.state.shape)
-                        print(f"{i},{j}, Einheit: {self.state[env_i, i, j, 11]}/{self.state[env_i,i,j,21]}")
                         if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
+                            print(f"Random in Replay Buffer bei ({i},{j})")
                             single_action = full_action_raw[env_i, i, j]  # [7]
                             self.exp_buffer.append(
                                 self.state[env_i],  # Zustand
@@ -338,7 +337,7 @@ class Agent:
             for env_i in range(e):
                 for i in range(h):
                     for j in range(w):
-                        print(f"{i},{j}, EInheit: {self.state[env_i,i,j,10]}")
+                        #print(f"{i},{j}, EInheit: {self.state[env_i,i,j,10]}")
                         if self.state[env_i,i,j,11]==1 and self.state[env_i,i,j,21]==1: #eiugen Einheit und keine Action
 
                             state_a = np.array([self.state], copy=False)  # [1, H, W, C]
@@ -423,6 +422,7 @@ class Agent:
                 for i in range(h):
                     for j in range(w):
                         if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
+                            #print(f"Agent in Replay Buffer bei ({i},{j})")
                             single_action = full_action[env_i, i, j]  # [7]
                             self.exp_buffer.append(
                                 self.state[env_i],  # [H, W, C]
@@ -674,7 +674,7 @@ if __name__ == "__main__":
         step_info = agent.play_step(epsilon=epsilon)
         envs.venv.venv.render(mode="human")
         done = step_info["done"]
-        print("done: ", done)
+        #print("done: ", done)
         reward = step_info["reward"]
         infos = step_info["infos"]
         raw_rewards = infos.get("raw_rewards", None)
@@ -685,6 +685,7 @@ if __name__ == "__main__":
         if len(expbuffer) < args.batch_size:
             print("buffer: ", len(expbuffer))
             continue
+        print("buffer:", len(expbuffer))
 
         # Target-Sync
         if frame_idx % args.sync_interval == 0:
@@ -706,7 +707,7 @@ if __name__ == "__main__":
         print("done vor if: ", done)
         if done:
             episode_idx += 1
-            print("episode: ", episode_idx)
+
             reward_queue.append(reward)
             mean_reward = np.mean(reward_queue)
             dauer = frame_idx - frame_start
