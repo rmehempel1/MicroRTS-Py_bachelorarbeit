@@ -319,7 +319,7 @@ class Agent:
                 for i in range(grid_size):
                     for j in range(grid_size):
                         if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
-                            print(f"Random in Replay Buffer bei ({i},{j})")
+                            #print(f"Random in Replay Buffer bei ({i},{j})")
                             single_action = full_action_raw[env_i, i, j]  # [7]
                             self.exp_buffer.append(
                                 self.state[env_i],  # Zustand
@@ -339,20 +339,24 @@ class Agent:
                     for j in range(w):
                         #print(f"{i},{j}, EInheit: {self.state[env_i,i,j,10]}")
                         if self.state[env_i,i,j,11]==1 and self.state[env_i,i,j,21]==1: #eiugen Einheit und keine Action
-
-                            state_a = np.array([self.state], copy=False)  # [1, H, W, C]
-                            state_a = np.transpose(state_a, (0, 3, 1, 2))  # ➜ [1, C, H, W]
+                            #print("state: ", self.state.shape)
+                            #state_a = np.array([self.state], copy=False)  # [1, H, W, C]
+                            #print("State_a: ",state_a.shape)
+                            state_a = np.transpose(self.state, (0, 3, 1, 2))  # ➜ [Envs, C, H, W]
                             state_v = torch.tensor(state_a, dtype=torch.float32, device=device)
                             unit_pos = torch.tensor([[j, i]], dtype=torch.float32, device=device)  # [B, 2]
-                            q_vals_v = net(state_v, unit_pos=unit_pos)
+                            q_vals_v = net(state_v, unit_pos=unit_pos) #Liste mit q_vals für die Teilaktionen
+                            #print("q_vals_v[0]: ", q_vals_v[0].shape)
 
                             # Maske für action_type (NONE, MOVE, ..., ATTACK) auf Zelle [env_i,i,j]
                             flat_index = i * grid_size + j
-                            mask = torch.tensor(raw_masks[e, flat_index, 0:6], dtype=torch.bool,device=q_vals_v[0].device)
-                            logits = q_vals_v[0][env_i,i,j]                       # Q-Werte der Zelle extrahieren
+                            #print("raw_mask: ", raw_masks.shape)
+                            mask = torch.tensor(raw_masks[e-1, flat_index, 0:6], dtype=torch.bool,device=q_vals_v[0].device) #e==Anzahl envs indizierung startet bei 0 ->-1
+                            #print("q_vals_v: ", q_vals_v.shape)
+                            logits = q_vals_v[0][env_i]                      # Q-Werte der Zelle extrahieren [env,6]
                             masked_logits = logits.masked_fill(~mask, -1e9)     # Ungültige Werte maskieren
                             action_type = torch.argmax(masked_logits).item()    # Beste gültige Aktion auswählen
-                            full_action[env_i,i,j, 0] = action_type               # In Aktionsarray eintragen
+                            full_action[i,j, 0] = action_type               # In Aktionsarray eintragen
 
                             # Nachfolgende Heads abhängig vom Action-Type
                             if action_type == 0:  # NONE
@@ -360,61 +364,61 @@ class Agent:
 
                             elif action_type == 1:  # MOVE (6:10)
                                 flat_index = i * grid_size + j
-                                mask = torch.tensor(raw_masks[e, flat_index, 6:10], dtype=torch.bool,
+                                mask = torch.tensor(raw_masks[e-1, flat_index, 6:10], dtype=torch.bool,
                                                     device=q_vals_v[1].device)
-                                logits = q_vals_v[1][env_i,i,j]
+                                logits = q_vals_v[1][env_i]
                                 masked_logits = logits.masked_fill(~mask, -1e9)
                                 move_dir = torch.argmax(masked_logits).item()
-                                full_action[env_i,i,j, 1] = move_dir
+                                full_action[i,j, 1] = move_dir
 
                             elif action_type == 2:  # HARVEST (10:14)
                                 flat_index = i * grid_size + j
-                                mask = torch.tensor(raw_masks[e, flat_index, 10:14], dtype=torch.bool,
+                                mask = torch.tensor(raw_masks[e-1, flat_index, 10:14], dtype=torch.bool,
                                                     device=q_vals_v[2].device)
-                                logits = q_vals_v[2][env_i,i,j]
+                                logits = q_vals_v[2][env_i]
                                 masked_logits = logits.masked_fill(~mask, -1e9)
                                 harvest_dir = torch.argmax(masked_logits).item()
-                                full_action[env_i,i,j, 2] = harvest_dir
+                                full_action[i,j, 2] = harvest_dir
 
                             elif action_type == 3:  # RETURN (14:18)
                                 flat_index = i * grid_size + j
-                                mask = torch.tensor(raw_masks[e, flat_index, 14:18], dtype=torch.bool,
+                                mask = torch.tensor(raw_masks[e-1, flat_index, 14:18], dtype=torch.bool,
                                                     device=q_vals_v[3].device)
-                                logits = q_vals_v[3][env_i,i,j]
+                                logits = q_vals_v[3][env_i]
                                 masked_logits = logits.masked_fill(~mask, -1e9)
                                 return_dir = torch.argmax(masked_logits).item()
-                                full_action[env_i,i,j, 3] = return_dir
+                                full_action[i,j, 3] = return_dir
 
                             elif action_type == 4:  # PRODUCE
                                 # Direction (18:22)
                                 flat_index = i * grid_size + j
-                                mask = torch.tensor(raw_masks[e, flat_index, 18:22], dtype=torch.bool,
+                                mask = torch.tensor(raw_masks[e-1, flat_index, 18:22], dtype=torch.bool,
                                                     device=q_vals_v[4].device)
-                                logits = q_vals_v[4][env_i,i,j]
+                                logits = q_vals_v[4][env_i]
                                 masked_logits = logits.masked_fill(~mask, -1e9)
                                 produce_dir = torch.argmax(masked_logits).item()
-                                full_action[env_i,i,j, 4] = produce_dir
+                                full_action[i,j, 4] = produce_dir
 
                                 # Unit-Type (22:29)
                                 flat_index = i * grid_size + j
-                                mask = torch.tensor(raw_masks[e, flat_index, 22:29], dtype=torch.bool,
+                                mask = torch.tensor(raw_masks[e-1, flat_index, 22:29], dtype=torch.bool,
                                                     device=q_vals_v[5].device)
-                                logits = q_vals_v[5][env_i,i,j]
+                                logits = q_vals_v[5][env_i]
                                 masked_logits = logits.masked_fill(~mask, -1e9)
                                 produce_type = torch.argmax(masked_logits).item()
-                                full_action[env_i,i,j, 5] = produce_type
+                                full_action[i,j, 5] = produce_type
 
                             elif action_type == 5:  # ATTACK (29:78)
                                 flat_index = i * grid_size + j
-                                mask = torch.tensor(raw_masks[e, flat_index, 29:78], dtype=torch.bool,
+                                mask = torch.tensor(raw_masks[e-1, flat_index, 29:78], dtype=torch.bool,
                                                     device=q_vals_v[6].device)
-                                logits = q_vals_v[6][env_i,i,j]
+                                logits = q_vals_v[6][env_i]
                                 masked_logits = logits.masked_fill(~mask, -1e9)
                                 attack_target = torch.argmax(masked_logits).item()
-                                full_action[env_i,i,j, 6] = attack_target
+                                full_action[i,j, 6] = attack_target
 
             torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
-            print("full_action: ", full_action.shape)
+            #print("full_action: ", full_action.shape)
             new_state, reward, is_done, infos = self.env.step(full_action)
 
             self.total_reward += reward
@@ -662,7 +666,7 @@ if __name__ == "__main__":
         frame_idx += 1
         epsilon = max(args.epsilon_final, args.epsilon_start - frame_idx / args.epsilon_decay)
         if frame_idx < warmup_frames:
-            epsilon = 1.0
+            epsilon = 0.0
 
         eval_reward = 0.0
         if frame_idx % eval_interval == 0:
@@ -683,9 +687,9 @@ if __name__ == "__main__":
             reward_counts[name] += value
 
         if len(expbuffer) < args.batch_size:
-            print("buffer: ", len(expbuffer))
+            #print("buffer: ", len(expbuffer))
             continue
-        print("buffer:", len(expbuffer))
+        #print("buffer:", len(expbuffer))
 
         # Target-Sync
         if frame_idx % args.sync_interval == 0:
@@ -704,7 +708,7 @@ if __name__ == "__main__":
 
         # Logging
 
-        print("done vor if: ", done)
+
         if done:
             episode_idx += 1
 
