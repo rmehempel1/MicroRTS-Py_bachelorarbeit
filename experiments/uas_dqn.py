@@ -435,8 +435,6 @@ class Agent:
                 for i in range(h):
                     for j in range(w):
                         if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
-                            #print(f"Agent in Replay Buffer bei ({i},{j})")
-                            print("full_action_raw[env_i, i, j](random): ", full_action_raw[env_i, i, j])
                             single_action = np.array(full_action_raw[env_i, i, j], dtype=np.int64)
 
                             self.exp_buffer.append(
@@ -474,7 +472,6 @@ class Agent:
 
         for i in range(h):
             for j in range(w):
-                print(i,j,self.state[0,i,j,11], self.state[0,i,j,21])
                 if self.state[0, i, j, 11] == 1 and self.state[0, i, j, 21] == 1:
                     flat_idx = i * grid_size + j
                     cell_mask = raw_masks[0, flat_idx]
@@ -506,10 +503,9 @@ class Agent:
                         mask = torch.tensor(cell_mask[0:6], dtype=torch.bool, device=device)
                         logits = q_vals_v[0][0]
                         masked_logits = logits.masked_fill(~mask, -1e9)
-                        print(masked_logits.shape)
+
                         a_type = torch.argmax(masked_logits).item()
                         if a_type==0:
-                            print(i,j,mask)
                             for k in range(5):
                                 if mask[k]:
                                     a_type=k
@@ -539,12 +535,12 @@ class Agent:
                             mask = torch.tensor(cell_mask[29:78], dtype=torch.bool, device=device)
                             logits = q_vals_v[6][0]
                             full_action[i, j, 6] = torch.argmax(logits.masked_fill(~mask, -1e9)).item()
-        print("full action: ",full_action[:,:,0])
-        # 📦 Action anwenden
+
+
         full_action_raw = full_action.copy()
         new_state, reward, is_done, infos = self.env.step(full_action.reshape(1, -1))
 
-        # 📤 In ReplayBuffer schreiben
+        #  In ReplayBuffer schreiben
         for i in range(h):
             for j in range(w):
                 if self.state[0, i, j, 11] == 1 and self.state[0, i, j, 21] == 1:
