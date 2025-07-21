@@ -615,7 +615,10 @@ class Agent:
                     q_target = reward + gamma * next_qval
 
                 loss = F.smooth_l1_loss(qval.unsqueeze(0), torch.tensor([q_target], device=device))
-                loss_per_head[head_idx] += loss.item()
+                if loss_per_head[head_idx] == 0.0:
+                    loss_per_head[head_idx] = loss
+                else:
+                    loss_per_head[head_idx] += loss
                 count_per_head[head_idx] += 1
 
         # Mittelwerte berechnen
@@ -623,7 +626,8 @@ class Agent:
             if count_per_head[i] > 0:
                 loss_per_head[i] /= count_per_head[i]
             else:
-                loss_per_head[i] = 0.0
+                loss_per_head[i] = torch.tensor(0.0, device=device, requires_grad=True)
+                print("kein Sample für Head: ", i)
 
         return loss_per_head
 
@@ -852,8 +856,13 @@ if __name__ == "__main__":
         # Training
         batch = expbuffer.sample(args.batch_size)
         optimizer.zero_grad()
-        loss = agent.calc_loss(batch, target_net, gamma=args.gamma)
-        loss.backward()
+
+        losses = agent.calc_loss(batch, target_net, gamma=args.gamma)
+        # Summiere alle Losses zu einem einzigen Tensor
+        total_loss = sum(losses)  # Alle sind Tensoren mit requires_grad=True
+
+        optimizer.zero_grad()
+        total_loss.backward()
         optimizer.step()
 
         # Logging
@@ -867,7 +876,7 @@ if __name__ == "__main__":
             dauer = frame_idx - frame_start
             frame_start = frame_idx
 
-            loss_str = ", ".join([f"{l:.4f}" for l in loss])  # Liste zu String
+            loss_str = ", ".join([f"{l:.4f}" for l in losses])  # Liste zu String
             print(f"Episode: {int(episode_idx)} Frame: {int(frame_idx)} "
                   f"Reward: {float(reward):.2f} Mean Reward: {float(mean_reward):.2f} Eval Reward: {float(eval_reward):.2f} "
                   f"Losses: [{loss_str}] Epsilon: {float(epsilon):.4f} Dauer: {float(dauer):.2f}")
@@ -879,7 +888,7 @@ if __name__ == "__main__":
                 reward=reward,
                 mean_reward=mean_reward,
                 eval_reward=eval_reward,
-                losses=loss, #loss ist eine Liste
+                losses=losses, #losses ist eine Liste
                 epsilon=epsilon,
                 dauer=dauer,
                 reward_counts=reward_counts,
