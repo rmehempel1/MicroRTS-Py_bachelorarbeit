@@ -195,6 +195,7 @@ class UASDQN(nn.Module):
             nn.Linear(512, 4),   # move_dir
             nn.Linear(512, 4),   # harvest_dir
             nn.Linear(512, 4),   # return_dir
+            nn.Linear(512, 4),  #prduce_dir
             nn.Linear(512, 7),   # produce_type
             nn.Linear(512, 49),  # attack_dir
         ])
