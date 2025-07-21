@@ -785,7 +785,7 @@ if __name__ == "__main__":
         frame_idx += 1
         epsilon = max(args.epsilon_final, args.epsilon_start - frame_idx / args.epsilon_decay)
         if frame_idx < warmup_frames:
-            epsilon = 0.0
+            epsilon = 1.0
 
         eval_reward = 0.0
         if frame_idx % eval_interval == 0:
