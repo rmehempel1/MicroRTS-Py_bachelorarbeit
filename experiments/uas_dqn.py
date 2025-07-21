@@ -627,7 +627,7 @@ class Agent:
                 loss_per_head[i] /= count_per_head[i]
             else:
                 loss_per_head[i] = torch.tensor(0.0, device=device, requires_grad=True)
-                print("kein Sample für Head: ", i)
+
 
         return loss_per_head
 
