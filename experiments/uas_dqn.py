@@ -242,7 +242,12 @@ class ReplayBuffer:
         states, actions, rewards, dones, next_states, unit_positions = zip(*samples)
 
         states = np.array(states, copy=False)  # [B, H, W, C]
-        actions = np.array(actions, copy=False)  # [B, 7]
+        actions = np.stack(actions)  # [B, 7]
+        print("actions type:", type(actions))
+        if isinstance(actions, np.ndarray):
+            print("actions shape:", actions.shape)
+        else:
+            print("actions len:", len(actions), "sample[0] shape:", np.array(actions[0]).shape)
         rewards = np.array(rewards, copy=False)  # [B]
         dones = np.array(dones, copy=False)  # [B]
         next_states = np.array(next_states, copy=False)  # [B, H, W, C]
