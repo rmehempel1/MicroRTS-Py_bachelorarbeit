@@ -832,9 +832,9 @@ if __name__ == "__main__":
             dauer = frame_idx - frame_start
             frame_start = frame_idx
 
-            print(f"Episode: {episode_idx} Frame: {frame_idx} "
-                  f"Reward: {reward:.2f} Mean Reward: {mean_reward:.2f} Eval Reward: {eval_reward:.2f} "
-                  f"Loss: {loss:.4f} Epsilon: {epsilon:.4f} Dauer: {dauer}")
+            print(f"Episode: {int(episode_idx)} Frame: {int(frame_idx)} "
+                  f"Reward: {float(reward):.2f} Mean Reward: {float(mean_reward):.2f} Eval Reward: {float(eval_reward):.2f} "
+                  f"Loss: {float(loss):.4f} Epsilon: {float(epsilon):.4f} Dauer: {float(dauer):.2f}")
 
             log_episode_to_csv(
                 csv_path=csv_path,
