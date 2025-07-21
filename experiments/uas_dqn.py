@@ -243,11 +243,13 @@ class ReplayBuffer:
 
         states = np.array(states, copy=False)  # [B, H, W, C]
         actions = np.stack(actions)  # [B, 7]
+        """
         print("actions type:", type(actions))
         if isinstance(actions, np.ndarray):
             print("actions shape:", actions.shape)
         else:
             print("actions len:", len(actions), "sample[0] shape:", np.array(actions[0]).shape)
+        """
         rewards = np.array(rewards, copy=False)  # [B]
         dones = np.array(dones, copy=False)  # [B]
         next_states = np.array(next_states, copy=False)  # [B, H, W, C]
@@ -325,7 +327,7 @@ class Agent:
                     for j in range(grid_size):
                         if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
                             #print(f"Random in Replay Buffer bei ({i},{j})")
-                            print("full_action_raw[env_i, i, j](random): ",full_action_raw[env_i, i, j])
+                            #print("full_action_raw[env_i, i, j](random): ",full_action_raw[env_i, i, j])
                             single_action = np.array(full_action_raw[env_i, i, j], dtype=np.int64)  # [7]
                             self.exp_buffer.append(
                                 self.state[env_i],  # Zustand
@@ -568,7 +570,7 @@ class Agent:
         states_v = torch.tensor(states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
         next_states_v = torch.tensor(next_states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
         actions_v = torch.tensor(actions, dtype=torch.int64, device=device)  # [B, 7]
-        print("actions_v: ", actions_v.shape)
+        #print("actions_v: ", actions_v.shape)
         rewards_v = torch.tensor(rewards, dtype=torch.float32, device=device)  # [B]
         done_mask = torch.tensor(dones, dtype=torch.bool, device=device)  # [B]
         unit_pos = torch.tensor(unit_positions, dtype=torch.long, device=device)  # [B, 2] (x, y)
@@ -579,8 +581,10 @@ class Agent:
 
         total_loss = 0.0
         for head_idx in range(len(qvals)):
+            """
             print(f"qvals[{head_idx}].shape: {qvals[head_idx].shape}")
             print(f"actions_v[:, {head_idx}].shape: {actions_v[:, head_idx].shape}")
+            """
             qval = qvals[head_idx].gather(1, actions_v[:, head_idx].unsqueeze(1)).squeeze(1)
             with torch.no_grad():
                 next_qval = qvals_next[head_idx].max(1).values
