@@ -274,7 +274,7 @@ class Agent:
 
 
     @torch.no_grad()
-    def play_step(self, epsilon=0.0):
+    def play_step_envs(self, epsilon=0.0):
         net = self.net
         device = self.device
         raw_masks = self.env.venv.venv.get_action_mask()  # [num_envs, H*W, 78]
@@ -325,7 +325,8 @@ class Agent:
                     for j in range(grid_size):
                         if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
                             #print(f"Random in Replay Buffer bei ({i},{j})")
-                            single_action = full_action_raw[env_i, i, j]  # [7]
+                            print("full_action_raw[env_i, i, j](random): ",full_action_raw[env_i, i, j])
+                            single_action = np.array(full_action_raw[env_i, i, j], dtype=np.int64)  # [7]
                             self.exp_buffer.append(
                                 self.state[env_i],  # Zustand
                                 single_action,  # Aktion für diese Unit
@@ -421,7 +422,7 @@ class Agent:
                                 masked_logits = logits.masked_fill(~mask, -1e9)
                                 attack_target = torch.argmax(masked_logits).item()
                                 full_action[i,j, 6] = attack_target
-
+            full_action_raw = full_action.copy()
             torch.tensor(self.env.venv.venv.get_action_mask(), dtype=torch.float32)
             #print("full_action: ", full_action.shape)
             new_state, reward, is_done, infos = self.env.step(full_action)
@@ -432,7 +433,9 @@ class Agent:
                     for j in range(w):
                         if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
                             #print(f"Agent in Replay Buffer bei ({i},{j})")
-                            single_action = full_action[env_i, i, j]  # [7]
+                            print("full_action_raw[env_i, i, j](random): ", full_action_raw[env_i, i, j])
+                            single_action = np.array(full_action_raw[env_i, i, j], dtype=np.int64)
+
                             self.exp_buffer.append(
                                 self.state[env_i],  # [H, W, C]
                                 single_action,  # [7]
@@ -450,6 +453,110 @@ class Agent:
             self._reset()
             return {"done": True, "reward": done_reward, "infos": infos[0]}
         return {"done": False, "reward": reward, "infos": infos[0]}
+
+    def play_step(self, epsilon=0.0):
+        assert self.env.num_envs == 1, "Diese play_step-Version unterstützt nur eine Umgebung."
+
+        net = self.net
+        device = self.device
+
+        raw_masks = self.env.venv.venv.get_action_mask()  # [1, H*W, 78]
+        _, h, w, _ = self.state.shape
+        grid_size = h  # Quadrat vorausgesetzt
+        full_action = np.zeros((h, w, 7), dtype=np.int32)
+
+        def sample_valid(mask_1d):
+            valid = np.where(mask_1d)[0]
+            return np.random.choice(valid) if len(valid) > 0 else 0
+
+        for i in range(h):
+            for j in range(w):
+                if self.state[0, i, j, 11] == 1 and self.state[0, i, j, 21] == 1:
+                    flat_idx = i * grid_size + j
+                    cell_mask = raw_masks[0, flat_idx]
+
+                    if np.random.random() < epsilon:
+                        # 🔁 Exploration (Zufallsaktion)
+                        a_type = sample_valid(cell_mask[0:6])
+                        full_action[i, j, 0] = a_type
+
+                        if a_type == 1:  # MOVE
+                            full_action[i, j, 1] = sample_valid(cell_mask[6:10])
+                        elif a_type == 2:  # HARVEST
+                            full_action[i, j, 2] = sample_valid(cell_mask[10:14])
+                        elif a_type == 3:  # RETURN
+                            full_action[i, j, 3] = sample_valid(cell_mask[14:18])
+                        elif a_type == 4:  # PRODUCE
+                            full_action[i, j, 4] = sample_valid(cell_mask[18:22])
+                            full_action[i, j, 5] = sample_valid(cell_mask[22:29])
+                        elif a_type == 5:  # ATTACK
+                            full_action[i, j, 6] = sample_valid(cell_mask[29:78])
+                    else:
+                        # ✅ Exploitation (Netzwerk)
+                        state_v = torch.tensor(self.state.transpose(0, 3, 1, 2), dtype=torch.float32, device=device)
+                        unit_pos = torch.tensor([[j, i]], dtype=torch.float32, device=device)
+                        q_vals_v = net(state_v, unit_pos=unit_pos)
+
+                        # Action-Type wählen
+                        mask = torch.tensor(cell_mask[0:6], dtype=torch.bool, device=device)
+                        logits = q_vals_v[0][0]
+                        masked_logits = logits.masked_fill(~mask, -1e9)
+                        a_type = torch.argmax(masked_logits).item()
+                        full_action[i, j, 0] = a_type
+
+                        # Head-spezifische Entscheidungen
+                        if a_type == 1:  # MOVE
+                            mask = torch.tensor(cell_mask[6:10], dtype=torch.bool, device=device)
+                            logits = q_vals_v[1][0]
+                            full_action[i, j, 1] = torch.argmax(logits.masked_fill(~mask, -1e9)).item()
+                        elif a_type == 2:  # HARVEST
+                            mask = torch.tensor(cell_mask[10:14], dtype=torch.bool, device=device)
+                            logits = q_vals_v[2][0]
+                            full_action[i, j, 2] = torch.argmax(logits.masked_fill(~mask, -1e9)).item()
+                        elif a_type == 3:  # RETURN
+                            mask = torch.tensor(cell_mask[14:18], dtype=torch.bool, device=device)
+                            logits = q_vals_v[3][0]
+                            full_action[i, j, 3] = torch.argmax(logits.masked_fill(~mask, -1e9)).item()
+                        elif a_type == 4:  # PRODUCE
+                            mask = torch.tensor(cell_mask[18:22], dtype=torch.bool, device=device)
+                            logits = q_vals_v[4][0]
+                            full_action[i, j, 4] = torch.argmax(logits.masked_fill(~mask, -1e9)).item()
+
+                            mask = torch.tensor(cell_mask[22:29], dtype=torch.bool, device=device)
+                            logits = q_vals_v[5][0]
+                            full_action[i, j, 5] = torch.argmax(logits.masked_fill(~mask, -1e9)).item()
+                        elif a_type == 5:  # ATTACK
+                            mask = torch.tensor(cell_mask[29:78], dtype=torch.bool, device=device)
+                            logits = q_vals_v[6][0]
+                            full_action[i, j, 6] = torch.argmax(logits.masked_fill(~mask, -1e9)).item()
+
+        # 📦 Action anwenden
+        full_action_raw = full_action.copy()
+        new_state, reward, is_done, infos = self.env.step(full_action.reshape(1, -1))
+
+        # 📤 In ReplayBuffer schreiben
+        for i in range(h):
+            for j in range(w):
+                if self.state[0, i, j, 11] == 1 and self.state[0, i, j, 21] == 1:
+                    single_action = np.array(full_action_raw[i, j], dtype=np.int64)
+                    self.exp_buffer.append(
+                        self.state[0],
+                        single_action,
+                        reward[0],
+                        is_done[0],
+                        new_state[0],
+                        (j, i)
+                    )
+
+        self.state = new_state
+        self.total_reward += reward
+
+        if is_done[0]:
+            done_reward = self.total_reward
+            self._reset()
+            return {"done": True, "reward": done_reward, "infos": infos[0]}
+
+        return {"done": False, "reward": reward[0], "infos": infos[0]}
 
     def calc_loss(self, batch, tgt_net, gamma):
         states, actions, rewards, dones, next_states, unit_positions = batch
