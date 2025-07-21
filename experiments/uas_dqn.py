@@ -574,36 +574,62 @@ class Agent:
         device = self.device
         B = len(states)
 
-        # [B, C, H, W]
         states_v = torch.tensor(states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
         next_states_v = torch.tensor(next_states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
         actions_v = torch.tensor(actions, dtype=torch.int64, device=device)  # [B, 7]
-        #print("actions_v: ", actions_v.shape)
-        rewards_v = torch.tensor(rewards, dtype=torch.float32, device=device)  # [B]
-        done_mask = torch.tensor(dones, dtype=torch.bool, device=device)  # [B]
-        unit_pos = torch.tensor(unit_positions, dtype=torch.long, device=device)  # [B, 2] (x, y)
+        rewards_v = torch.tensor(rewards, dtype=torch.float32, device=device)
+        done_mask = torch.tensor(dones, dtype=torch.bool, device=device)
+        unit_pos = torch.tensor(unit_positions, dtype=torch.long, device=device)
 
-        # Q-Werte nur für relevante Einheiten berechnen
-        qvals = self.net(states_v, unit_pos=unit_pos)  # Liste: [B, num_actions] je Head
+        qvals = self.net(states_v, unit_pos=unit_pos)
         qvals_next = tgt_net(next_states_v, unit_pos=unit_pos)
 
-        total_loss = 0.0
-        for head_idx in range(len(qvals)):
-            """
-            print(f"qvals[{head_idx}].shape: {qvals[head_idx].shape}")
-            print(f"actions_v[:, {head_idx}].shape: {actions_v[:, head_idx].shape}")
-            """
-            qval = qvals[head_idx].gather(1, actions_v[:, head_idx].unsqueeze(1)).squeeze(1)
-            with torch.no_grad():
-                next_qval = qvals_next[head_idx].max(1).values
-                next_qval[done_mask] = 0.0
-                q_target = rewards_v + gamma * next_qval
+        num_heads = len(qvals)
+        loss_per_head = [0.0 for _ in range(num_heads)]
+        count_per_head = [0 for _ in range(num_heads)]
 
-            loss = F.smooth_l1_loss(qval, q_target)
-            total_loss += loss
+        for b in range(B):
+            a_type = actions_v[b, 0].item()
+            reward = rewards_v[b].item()
+            done = done_mask[b].item()
 
-        return total_loss
+            # Always include head 0: action_type
+            active_heads = [0]
 
+            # Heads by action type
+            if a_type == 1:  # MOVE
+                active_heads.append(1)
+            elif a_type == 2:  # HARVEST
+                active_heads.append(2)
+            elif a_type == 3:  # RETURN
+                active_heads.append(3)
+            elif a_type == 4:  # PRODUCE
+                active_heads.extend([4, 5])
+            elif a_type == 5:  # ATTACK
+                active_heads.append(6)
+
+            for head_idx in active_heads:
+                act = actions_v[b, head_idx].item()  # index in this head
+
+                qval = qvals[head_idx][b, act]
+                with torch.no_grad():
+                    next_qval = qvals_next[head_idx][b].max().item()
+                    if done:
+                        next_qval = 0.0
+                    q_target = reward + gamma * next_qval
+
+                loss = F.smooth_l1_loss(qval.unsqueeze(0), torch.tensor([q_target], device=device))
+                loss_per_head[head_idx] += loss.item()
+                count_per_head[head_idx] += 1
+
+        # Mittelwerte berechnen
+        for i in range(num_heads):
+            if count_per_head[i] > 0:
+                loss_per_head[i] /= count_per_head[i]
+            else:
+                loss_per_head[i] = 0.0
+
+        return loss_per_head
 
 def log_episode_to_csv(
     csv_path: str,
@@ -612,7 +638,7 @@ def log_episode_to_csv(
     reward: float,
     mean_reward: float,
     eval_reward: float,
-    loss: float,
+    losses: list[float],
     epsilon: float,
     dauer: float,
     reward_counts: dict,
@@ -621,16 +647,17 @@ def log_episode_to_csv(
     """
     Schreibt eine abgeschlossene Episode in eine CSV-Datei.
     """
+    header = ["episode", "frame", "reward", "mean_reward", "eval_reward"]
+    header += [f"loss_head_{i}" for i in range(len(losses))]
+    header += ["epsilon", "dauer"] + reward_names
+
     row = [
-        episode_idx,
-        frame_idx,
-        reward,
-        mean_reward,
-        eval_reward,
-        loss if loss is not None else "",
-        epsilon,
-        dauer
-    ] + [reward_counts.get(name, 0) for name in reward_names]
+              episode_idx,
+              frame_idx,
+              reward,
+              mean_reward,
+              eval_reward,
+          ] + losses + [epsilon, dauer] + [reward_counts.get(name, 0) for name in reward_names]
 
     file_exists = os.path.isfile(csv_path)
     with open(csv_path, mode="a", newline="") as f:
@@ -844,9 +871,10 @@ if __name__ == "__main__":
             dauer = frame_idx - frame_start
             frame_start = frame_idx
 
+            loss_str = ", ".join([f"{l:.4f}" for l in loss])  # Liste zu String
             print(f"Episode: {int(episode_idx)} Frame: {int(frame_idx)} "
                   f"Reward: {float(reward):.2f} Mean Reward: {float(mean_reward):.2f} Eval Reward: {float(eval_reward):.2f} "
-                  f"Loss: {float(loss):.4f} Epsilon: {float(epsilon):.4f} Dauer: {float(dauer):.2f}")
+                  f"Losses: [{loss_str}] Epsilon: {float(epsilon):.4f} Dauer: {float(dauer):.2f}")
 
             log_episode_to_csv(
                 csv_path=csv_path,
@@ -855,7 +883,7 @@ if __name__ == "__main__":
                 reward=reward,
                 mean_reward=mean_reward,
                 eval_reward=eval_reward,
-                loss=loss.item(),
+                losses=loss, #loss ist eine Liste
                 epsilon=epsilon,
                 dauer=dauer,
                 reward_counts=reward_counts,
