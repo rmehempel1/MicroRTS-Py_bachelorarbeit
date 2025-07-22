@@ -493,7 +493,7 @@ class Agent:
                         elif a_type == 5:  # ATTACK
                             full_action[i, j, 6] = sample_valid(cell_mask[29:78])
                     else:
-                        # ✅ Exploitation (Netzwerk)
+                        # Exploitation (Netzwerk)
                         state_v = torch.tensor(self.state.transpose(0, 3, 1, 2), dtype=torch.float32, device=device)
                         unit_pos = torch.tensor([[j, i]], dtype=torch.float32, device=device)
                         q_vals_v = net(state_v, unit_pos=unit_pos)
@@ -501,14 +501,19 @@ class Agent:
 
 
                         mask = torch.tensor(cell_mask[0:6], dtype=torch.bool, device=device)
+                        print("AttackMask", mask)
                         logits = q_vals_v[0][0]
                         masked_logits = logits.masked_fill(~mask, -1e9)
 
                         a_type = torch.argmax(masked_logits).item()
+
+                        print(f"Unit at ({i},{j}) ATTACK-MASK: {cell_mask[29:78]}")
+                        print(f"Valid ATTACK indices: {np.where(cell_mask[29:78])[0]}")
                         if a_type==0:
-                            for k in range(5):
+                            for k in range(6):
                                 if mask[k]:
                                     a_type=k
+
                         full_action[i, j, 0] = a_type
                         # Head-spezifische Entscheidungen
                         if a_type == 1:  # MOVE
@@ -532,6 +537,8 @@ class Agent:
                             logits = q_vals_v[5][0]
                             full_action[i, j, 5] = torch.argmax(logits.masked_fill(~mask, -1e9)).item()
                         elif a_type == 5:  # ATTACK
+
+
                             mask = torch.tensor(cell_mask[29:78], dtype=torch.bool, device=device)
                             logits = q_vals_v[6][0]
                             full_action[i, j, 6] = torch.argmax(logits.masked_fill(~mask, -1e9)).item()
