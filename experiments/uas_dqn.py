@@ -230,8 +230,8 @@ class ReplayBuffer:
         self.state_shape = state_shape
         self.action_shape = action_shape
 
-    def append(self, state, action, reward, done, next_state, unit_pos):
-        self.buffer.append((state, action, reward, done, next_state, unit_pos))
+    def append(self, state, action, reward, done, next_state, unit_pos, action_masks, next_action_masks):
+        self.buffer.append((state, action, reward, done, next_state, unit_pos, action_masks, next_action_masks ))
 
     def __len__(self):
         return len(self.buffer)
@@ -240,7 +240,7 @@ class ReplayBuffer:
         indices = np.random.choice(len(self.buffer), batch_size, replace=False)
         samples = [self.buffer[idx] for idx in indices]
 
-        states, actions, rewards, dones, next_states, unit_positions = zip(*samples)
+        states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks = zip(*samples)
 
         states = np.array(states, copy=False)  # [B, H, W, C]
         actions = np.stack(actions)  # [B, 7]
@@ -256,8 +256,7 @@ class ReplayBuffer:
         next_states = np.array(next_states, copy=False)  # [B, H, W, C]
         unit_positions = np.array(unit_positions, copy=False)  # [B, 2]
 
-        return states, actions, rewards, dones, next_states, unit_positions
-
+        return states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks
 class Agent:
     def __init__(self, env, exp_buffer, net, device="cpu"):
         self.env=env
@@ -473,8 +472,22 @@ class Agent:
         for i in range(h):
             for j in range(w):
                 if self.state[0, i, j, 11] == 1 and self.state[0, i, j, 21] == 1:
+
                     flat_idx = i * grid_size + j
                     cell_mask = raw_masks[0, flat_idx]
+
+                    """mask für den calc loss speichern"""
+                    # Action-Mask pro Head extrahieren
+                    action_masks = [
+                        cell_mask[0:6],  # Head 0: Action-Type
+                        cell_mask[6:10],  # Head 1: MOVE direction
+                        cell_mask[10:14],  # Head 2: HARVEST direction
+                        cell_mask[14:18],  # Head 3: RETURN direction
+                        cell_mask[18:22],  # Head 4: PRODUCE direction
+                        cell_mask[22:29],  # Head 5: PRODUCE unit type
+                        cell_mask[29:78],  # Head 6: ATTACK target
+                    ]
+                    action_masks = [m.copy() for m in action_masks]
 
                     if np.random.random() < epsilon:
                         # 🔁 Exploration (Zufallsaktion)
@@ -506,14 +519,14 @@ class Agent:
                         masked_logits = logits.masked_fill(~mask, -1e9)
 
                         a_type = torch.argmax(masked_logits).item()
-
+                        """
                         print(f"Unit at ({i},{j}) ATTACK-MASK: {cell_mask[29:78]}")
                         print(f"Valid ATTACK indices: {np.where(cell_mask[29:78])[0]}")
                         if a_type==0:
                             for k in range(6):
                                 if mask[k]:
                                     a_type=k
-
+                        """
                         full_action[i, j, 0] = a_type
                         # Head-spezifische Entscheidungen
                         if a_type == 1:  # MOVE
@@ -547,6 +560,20 @@ class Agent:
         full_action_raw = full_action.copy()
         new_state, reward, is_done, infos = self.env.step(full_action.reshape(1, -1))
 
+        next_raw_masks = self.env.venv.venv.get_action_mask()
+        flat_idx = i * grid_size + j
+        next_cell_mask = next_raw_masks[0, flat_idx]
+        next_action_masks = [
+            next_cell_mask[0:6],
+            next_cell_mask[6:10],
+            next_cell_mask[10:14],
+            next_cell_mask[14:18],
+            next_cell_mask[18:22],
+            next_cell_mask[22:29],
+            next_cell_mask[29:78],
+        ]
+        next_action_masks = [m.copy() for m in next_action_masks]
+
         #  In ReplayBuffer schreiben
         for i in range(h):
             for j in range(w):
@@ -558,7 +585,9 @@ class Agent:
                         reward[0],
                         is_done[0],
                         new_state[0],
-                        (j, i)
+                        (j, i),
+                        action_masks,
+                        next_action_masks
                     )
 
         self.state = new_state
@@ -571,7 +600,7 @@ class Agent:
 
         return {"done": False, "reward": reward[0], "infos": infos[0]}
 
-    def calc_loss(self, batch, tgt_net, gamma):
+    def calc_loss_onlyactiveHeads(self, batch, tgt_net, gamma):
         states, actions, rewards, dones, next_states, unit_positions = batch
 
         device = self.device
@@ -638,6 +667,77 @@ class Agent:
 
         return loss_per_head
 
+    def calc_loss(self, batch, tgt_net, gamma, action_masks=None):
+        """
+        Berechnet den Loss für alle Heads, auch wenn sie nicht aktiv verwendet wurden.
+        Nur valide Maskenbereiche werden für das TD-Ziel berücksichtigt.
+        """
+        states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks = batch
+
+        device = self.device
+        B = len(actions)   #mehrer actions mit dem selben state (aber verschieden unit_pos)
+
+        states_v = torch.tensor(states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
+        next_states_v = torch.tensor(next_states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
+        actions_v = torch.tensor(actions, dtype=torch.int64, device=device)
+        rewards_v = torch.tensor(rewards, dtype=torch.float32, device=device)
+        done_mask = torch.tensor(dones, dtype=torch.bool, device=device)
+        unit_pos = torch.tensor(unit_positions, dtype=torch.long, device=device)
+
+        qvals = self.net(states_v, unit_pos=unit_pos)
+        qvals_next = tgt_net(next_states_v, unit_pos=unit_pos)
+
+        num_heads = len(qvals)
+        loss_per_head = [0.0 for _ in range(num_heads)]
+        count_per_head = [0 for _ in range(num_heads)]
+
+
+
+        for b in range(B):
+            reward = rewards_v[b].item()
+            done = done_mask[b].item()
+
+            for head_idx in range(num_heads):
+                q_head = qvals[head_idx][b]
+                q_next_head = qvals_next[head_idx][b]
+
+
+                # Wenn Action-Masken vorhanden: nutze sie
+                if action_masks is not None:
+                    mask = torch.tensor(action_masks[b][head_idx], dtype=torch.bool, device=device)
+                    if not mask.any():
+                        continue
+                else:
+                    mask = torch.ones_like(q_head, dtype=torch.bool, device=device)
+
+                # TD-Ziel berechnen für alle gültigen Aktionen
+                with torch.no_grad():
+                    if done:
+                        q_target = torch.full_like(q_head, reward)
+                    else:
+                        next_mask = torch.tensor(next_action_masks[b][head_idx], dtype=torch.bool, device=device)
+                        if next_mask.any():
+                            max_q = q_next_head[next_mask].max()
+                        else:
+                            max_q = torch.tensor(0.0, device=device)
+                        q_target = reward + gamma * max_q
+
+                loss = F.smooth_l1_loss(q_head[mask], q_target[mask])
+
+                if loss_per_head[head_idx] == 0.0:
+                    loss_per_head[head_idx] = loss
+                else:
+                    loss_per_head[head_idx] += loss
+                count_per_head[head_idx] += 1
+
+        # Mittelwerte berechnen
+        for i in range(num_heads):
+            if count_per_head[i] > 0:
+                loss_per_head[i] /= count_per_head[i]
+            else:
+                loss_per_head[i] = torch.tensor(0.0, device=device, requires_grad=True)
+
+        return loss_per_head
 def log_episode_to_csv(
     csv_path: str,
     episode_idx: int,
@@ -714,7 +814,7 @@ if __name__ == "__main__":
     ([microrts_ai.passiveAI for _ in range(args.num_bot_envs // 2)] +
           [microrts_ai.workerRushAI for _ in range(args.num_bot_envs // 2)]),
     """
-    reward_weights = np.array([100.0, 1.0, 10.0, -100.0, 10.0, -100.0])
+    reward_weights = np.array([10.0, 1.0, 3.0, -0.0, 50.0, 5.0])
     print("Reward Weights:", reward_weights)
     envs = MicroRTSGridModeVecEnv(
         num_selfplay_envs=args.num_selfplay_envs,
@@ -722,7 +822,7 @@ if __name__ == "__main__":
         partial_obs=args.partial_obs,
         max_steps=args.max_steps,
         render_theme=2,
-        ai2s= [microrts_ai.passiveAI for _ in range(args.num_bot_envs)],
+        ai2s= [microrts_ai.workerRushAI for _ in range(args.num_bot_envs)],
 
         map_paths=[args.train_maps[0]],
         reward_weight=reward_weights,
@@ -770,7 +870,7 @@ if __name__ == "__main__":
     dummy_input_shape = (29, 8, 8)  # [C, H, W]
     policy_net = UASDQN(input_shape=dummy_input_shape).to(device)
     target_net = UASDQN(input_shape=dummy_input_shape).to(device)
-    target_net.load_state_dict(policy_net.state_dict())  # 🟢 Initiales Sync
+    target_net.load_state_dict(policy_net.state_dict())  #  Initiales Sync
     target_net.eval()
 
     optimizer = torch.optim.Adam(policy_net.parameters(), lr=args.learning_rate)
@@ -812,7 +912,7 @@ if __name__ == "__main__":
     Training
     """
     # Netzwerke initialisieren
-    target_net.load_state_dict(policy_net.state_dict())  # 🟢 Initiales Sync
+    target_net.load_state_dict(policy_net.state_dict())  #  Initiales Sync
     target_net.eval()
 
     optimizer = torch.optim.Adam(policy_net.parameters(), lr=args.learning_rate)
@@ -858,7 +958,7 @@ if __name__ == "__main__":
 
         # Checkpoint speichern
         if frame_idx % 300000 == 0:
-            torch.save(policy_net.state_dict(), f"checkpoints/{args.exp_name}_policy_{frame_idx}.pth")
+            torch.save(policy_net.state_dict(), f"checkpoints/{args.exp_name}_{frame_idx}.pth")
 
         # Training
         batch = expbuffer.sample(args.batch_size)
