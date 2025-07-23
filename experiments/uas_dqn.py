@@ -183,7 +183,7 @@ class UASDQN(nn.Module):
 
         conv_out_size = self._get_conv_out((c, h, w))
 
-        # ⚠️ +2 für (x, y) Position
+        #  +2 für (x, y) Position
         self.fc = nn.Sequential(
             nn.Linear(conv_out_size + 2, 512),
             nn.ReLU(),
@@ -745,32 +745,48 @@ def log_episode_to_csv(
     reward: float,
     mean_reward: float,
     eval_reward: float,
-    losses: list[float],
+    losses: list,
     epsilon: float,
     dauer: float,
     reward_counts: dict,
     reward_names: list
 ):
     """
-    Schreibt eine abgeschlossene Episode in eine CSV-Datei.
+    Schreibt eine abgeschlossene Episode in eine CSV-Datei mit robustem Logging.
+    Konvertiert alle Tensoren in lesbare Floats. Fügt optional Diagnose-Informationen hinzu.
     """
+    def to_float(val):
+        # Konvertiert Tensoren oder einfache Zahlen in float
+        if isinstance(val, torch.Tensor):
+            return val.item()
+        elif isinstance(val, (float, int)):
+            return float(val)
+        else:
+            try:
+                return float(val)
+            except:
+                return str(val)
+
+    # Spaltenüberschriften
     header = ["episode", "frame", "reward", "mean_reward", "eval_reward"]
     header += [f"loss_head_{i}" for i in range(len(losses))]
     header += ["epsilon", "dauer"] + reward_names
 
+    # Inhalte vorbereiten
     row = [
-              episode_idx,
-              frame_idx,
-              reward,
-              mean_reward,
-              eval_reward,
-          ] + losses + [epsilon, dauer] + [reward_counts.get(name, 0) for name in reward_names]
+        episode_idx,
+        frame_idx,
+        reward,
+        mean_reward,
+        eval_reward,
+    ] + [to_float(l) for l in losses] + [epsilon, dauer] + [reward_counts.get(name, 0) for name in reward_names]
 
+    # Datei öffnen und ggf. Header schreiben
     file_exists = os.path.isfile(csv_path)
     with open(csv_path, mode="a", newline="") as f:
         writer = csv.writer(f)
         if not file_exists or os.stat(csv_path).st_size == 0:
-            writer.writerow(["episode", "frame", "reward","mean_reward","eval_reward", "loss", "epsilon", "dauer"] + reward_names)
+            writer.writerow(header)
         writer.writerow(row)
 
 if __name__ == "__main__":
