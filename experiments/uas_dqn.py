@@ -720,7 +720,7 @@ class Agent:
                             max_q = q_next_head[next_mask].max()
                         else:
                             max_q = torch.tensor(0.0, device=device)
-                        q_target = reward + gamma * max_q
+                        q_target = torch.full_like(q_head, reward + gamma * max_q)
 
                 loss = F.smooth_l1_loss(q_head[mask], q_target[mask])
 
