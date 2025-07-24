@@ -1144,7 +1144,7 @@ if __name__ == "__main__":
         #print("done: ", done)
         reward = step_info["reward"]
         infos = step_info["infos"]
-        raw_rewards = infos.get("raw_rewards", None)
+        raw_rewards = sum(info.get("raw_rewards", 0.0) for info in infos)
 
         for name, value in zip(reward_names, raw_rewards):
             reward_counts[name] += value
