@@ -774,7 +774,8 @@ class Agent:
                 "reward": done_rewards,  # Liste von Rewards für alle Envs
                 "infos": infos  # Liste von Infos für alle Envs
             }
-
+        num_done = sum(is_done)
+        print(f"{num_done}/{self.env.num_envs} Environments done.")
         return {
             "done": False,
             "reward": reward,
