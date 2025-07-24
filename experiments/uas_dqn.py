@@ -638,7 +638,7 @@ class Agent:
                         if np.random.random() < epsilon:
                             # 🔁 Exploration (Zufallsaktion)
                             a_type = sample_valid(cell_mask[0:6])
-                            full_action[env_i,env_i, i, j, 0] = a_type
+                            full_action[env_i, i, j, 0] = a_type
 
                             if a_type == 1:  # MOVE
                                 full_action[env_i, i, j, 1] = sample_valid(cell_mask[6:10])
