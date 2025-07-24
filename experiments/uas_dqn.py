@@ -1132,22 +1132,22 @@ if __name__ == "__main__":
             epsilon = 1.0
 
         eval_reward = 0.0
-        if frame_idx % eval_interval == 0:
-            # eval_reward = evaluate(agent, eval_env, device=device)
-            print(f"[EVAL] Frame {frame_idx} Durchschnittlicher Reward: {eval_reward:.2f}")
+        #if frame_idx % eval_interval == 0:
+            #eval_reward = evaluate(agent, eval_env, device=device)
+            #print(f"[EVAL] Frame {frame_idx} Durchschnittlicher Reward: {eval_reward:.2f}")
 
         # Schritt ausführen
         #print("frame:" ,frame_idx)
         step_info = agent.play_step(epsilon=epsilon)
         #envs.venv.venv.render(mode="human")
-        done = step_info["done"]
+        #done = step_info["done"]
         #print("done: ", done)
-        reward = step_info["reward"]
-        infos = step_info["infos"]
-        raw_rewards = sum(info.get("raw_rewards", 0.0) for info in infos)
+        #reward = step_info["reward"]
+        #infos = step_info["infos"]
+        #raw_rewards = sum(info.get("raw_rewards", 0.0) for info in infos)
 
-        for name, value in zip(reward_names, raw_rewards):
-            reward_counts[name] += value
+        """        for name, value in zip(reward_names, raw_rewards):
+            reward_counts[name] += value"""
 
         if len(expbuffer) < args.batch_size:
             #print("buffer: ", len(expbuffer))
@@ -1177,45 +1177,6 @@ if __name__ == "__main__":
         # Logging
 
 
-        if done:
-            episode_idx += 1
-
-            reward_queue.append(reward)
-            mean_reward = np.mean(reward_queue)
-            dauer = frame_idx - frame_start
-            frame_start = frame_idx
-
-            loss_str = ", ".join([f"{l:.4f}" for l in losses])  # Liste zu String
-            print(f"Episode: {int(episode_idx)} Frame: {int(frame_idx)} "
-                  f"Reward: {float(reward):.2f} Mean Reward: {float(mean_reward):.2f} Eval Reward: {float(eval_reward):.2f} "
-                  f"Losses: [{loss_str}] Epsilon: {float(epsilon):.4f} Dauer: {float(dauer):.2f}")
-
-            log_episode_to_csv(
-                csv_path=csv_path,
-                episode_idx=episode_idx,
-                frame_idx=frame_idx,
-                reward=reward,
-                mean_reward=mean_reward,
-                eval_reward=eval_reward,
-                losses=losses, #losses ist eine Liste
-                epsilon=epsilon,
-                dauer=dauer,
-                reward_counts=reward_counts,
-                reward_names=reward_names
-            )
-
-            for name in reward_names:
-                print(f"{name}: {reward_counts[name]}")
-                reward_counts[name] = 0
-
-            # Bestes Modell speichern
-            if frame_idx > warmup_frames and (best_mean_reward is None or mean_reward > best_mean_reward):
-                print(
-                    f"Neues bestes Ergebnis: old mean reward: {best_mean_reward:.2f}" if best_mean_reward is not None else "old mean reward: None",
-                    f"new: {mean_reward:.2f}" if mean_reward is not None else "new: None")
-
-                best_mean_reward = mean_reward
-                torch.save(policy_net.state_dict(), os.path.join(model_dir, f"{args.exp_name}_best.pth"))
 
     # Training fertig – final speichern
     torch.save(policy_net.state_dict(), os.path.join(model_dir, f"{args.exp_name}_final.pth"))
