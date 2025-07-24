@@ -777,6 +777,8 @@ class Agent:
 
         return {
             "done": False,
+            "reward": reward,
+            "infos": infos
         }
 
     def calc_loss_onlyactiveHeads(self, batch, tgt_net, gamma):
