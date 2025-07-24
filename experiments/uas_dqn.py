@@ -266,6 +266,9 @@ class Agent:
         self.net = net
         self.state = self.env.reset()
         self.total_rewards = [0.0 for _ in range(self.env.num_envs)]
+        self.env_episode_counter = [0 for _ in range(self.env.num_envs)]
+        self.total_rewards = [0.0 for _ in range(self.env.num_envs)]
+        self.episode_steps = [0 for _ in range(self.env.num_envs)]
 
     def _reset(self):
         """
@@ -759,28 +762,21 @@ class Agent:
         self.state = new_state
         for env_i in range(self.env.num_envs):
             self.total_rewards[env_i] += reward[env_i]
+            self.episode_steps[env_i] += 1
 
-        if all(is_done):
-            done_rewards = self.total_rewards.copy()
-            self.total_rewards = [0.0 for _ in range(self.env.num_envs)]
-            avg_reward = sum(done_rewards) / len(done_rewards)
-            max_reward = max(done_rewards)
-            min_reward = min(done_rewards)
-            print(
-                f"[Episode done] AvgReward: {avg_reward:.2f}, Max: {max_reward:.2f}, Min: {min_reward:.2f}")
-            self._reset()
-            return {
-                "done": True,
-                "reward": done_rewards,  # Liste von Rewards für alle Envs
-                "infos": infos  # Liste von Infos für alle Envs
-            }
-        num_done = sum(is_done)
-        print(f"{num_done}/{self.env.num_envs} Environments done.")
-        return {
-            "done": False,
-            "reward": reward,
-            "infos": infos
-        }
+            if is_done[env_i]:
+                # Episode abgeschlossen → Ausgabe
+                ep = self.env_episode_counter[env_i]
+                shaped = self.total_rewards[env_i]
+                raw = infos[env_i].get("raw_rewards", None)
+                steps = self.episode_steps[env_i]
+
+                print(f"[Env {env_i} | Episode {ep}] Reward: {shaped:.2f}, RawReward: {raw}, Steps: {steps}")
+
+                # Reset für nächste Episode vorbereiten
+                self.env_episode_counter[env_i] += 1
+                self.total_rewards[env_i] = 0.0
+                self.episode_steps[env_i] = 0
 
     def calc_loss_onlyactiveHeads(self, batch, tgt_net, gamma):
         states, actions, rewards, dones, next_states, unit_positions = batch
