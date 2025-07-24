@@ -778,6 +778,9 @@ class Agent:
                 self.total_rewards[env_i] = 0.0
                 self.episode_steps[env_i] = 0
 
+        return {
+            "done": False
+        }
     def calc_loss_onlyactiveHeads(self, batch, tgt_net, gamma):
         states, actions, rewards, dones, next_states, unit_positions = batch
 
