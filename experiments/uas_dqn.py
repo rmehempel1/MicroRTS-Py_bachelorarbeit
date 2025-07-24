@@ -1011,15 +1011,17 @@ if __name__ == "__main__":
     """
     reward_weights = np.array([10.0, 3.0, 3.0, 0.0, 5.0, 1.0])
     print("Reward Weights:", reward_weights)
+    num_envs = args.num_bot_envs
+    num_each = num_envs // 2  # ganzzahliger Anteil
     envs = MicroRTSGridModeVecEnv(
         num_selfplay_envs=args.num_selfplay_envs,
         num_bot_envs=args.num_bot_envs,
         partial_obs=args.partial_obs,
         max_steps=args.max_steps,
         render_theme=2,
-        ai2s= (
-    [microrts_ai.workerRushAI for _ in range(args.num_bot_envs/2)] +
-    [microrts_ai.passiveAI for _ in range(args.num_bot_envs/2)]
+        ai2s=  (
+    [microrts_ai.workerRushAI for _ in range(num_each)] +
+    [microrts_ai.passiveAI for _ in range(num_envs - num_each)]
 ),
 
         map_paths=[args.train_maps[0]],
