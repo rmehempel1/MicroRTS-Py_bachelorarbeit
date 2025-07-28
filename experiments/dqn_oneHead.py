@@ -500,13 +500,13 @@ class Agent:
         for b in range(B):
             if next_action_masks is not None:
                 next_mask = torch.cat([
-                    torch.tensor(next_action_masks[b][0], dtype=torch.bool, device=device),  # action_type [6]
-                    torch.tensor(next_action_masks[b][1], dtype=torch.bool, device=device),  # move_dir [4]
-                    torch.tensor(next_action_masks[b][2], dtype=torch.bool, device=device),  # harvest_dir [4]
-                    torch.tensor(next_action_masks[b][3], dtype=torch.bool, device=device),  # return_dir [4]
-                    torch.tensor(next_action_masks[b][6], dtype=torch.bool, device=device),  # produce_combined [28]
-                    torch.tensor(next_action_masks[b][7], dtype=torch.bool, device=device),  # attack_index [49]
-                ], dim=0)  # total 89
+                    torch.tensor(next_action_masks[b][0], dtype=torch.bool, device=device).reshape(-1),
+                    torch.tensor(next_action_masks[b][1], dtype=torch.bool, device=device).reshape(-1),
+                    torch.tensor(next_action_masks[b][2], dtype=torch.bool, device=device).reshape(-1),
+                    torch.tensor(next_action_masks[b][3], dtype=torch.bool, device=device).reshape(-1),
+                    torch.tensor(next_action_masks[b][6], dtype=torch.bool, device=device).reshape(-1),
+                    torch.tensor(next_action_masks[b][7], dtype=torch.bool, device=device).reshape(-1),
+                ], dim=0)
 
                 if next_mask.any():
                     max_q = qvals_next[b][next_mask].max()
