@@ -486,8 +486,8 @@ class Agent:
         unit_pos = torch.tensor(unit_positions, dtype=torch.long, device=device)
 
         # --- Q(s, a) und Q(s', ·) berechnen ---
-        qvals = self.net(states_v, unit_pos=unit_pos)  # [B, 89]
-        qvals_next = tgt_net(next_states_v, unit_pos=unit_pos)  # [B, 89]
+        qvals = self.net(states_v, unit_pos=unit_pos)  # [B, 95]
+        qvals_next = tgt_net(next_states_v, unit_pos=unit_pos)  # [B, 95]
 
         # --- Aktionsindex bestimmen ---
         q_indices = torch.tensor(
@@ -499,17 +499,10 @@ class Agent:
         target_qvals = torch.zeros(B, dtype=torch.float32, device=device)
         for b in range(B):
             if next_action_masks is not None:
-                next_mask = torch.cat([
-                    torch.tensor(next_action_masks[b][0], dtype=torch.bool, device=device).reshape(-1),
-                    torch.tensor(next_action_masks[b][1], dtype=torch.bool, device=device).reshape(-1),
-                    torch.tensor(next_action_masks[b][2], dtype=torch.bool, device=device).reshape(-1),
-                    torch.tensor(next_action_masks[b][3], dtype=torch.bool, device=device).reshape(-1),
-                    torch.tensor(next_action_masks[b][6], dtype=torch.bool, device=device).reshape(-1),
-                    torch.tensor(next_action_masks[b][7], dtype=torch.bool, device=device).reshape(-1),
-                ], dim=0)
-
-                if next_mask.any():
-                    max_q = qvals_next[b][next_mask].max()
+                # Umwandlung zurück zu Tensor
+                next_mask_95 = torch.tensor(next_action_masks[b], dtype=torch.bool, device=device)
+                if next_mask_95.any():
+                    max_q = qvals_next[b][next_mask_95].max()
                 else:
                     max_q = torch.tensor(0.0, device=device)
             else:
@@ -517,7 +510,6 @@ class Agent:
 
             target_qvals[b] = rewards_v[b] if done_mask[b] else rewards_v[b] + gamma * max_q
 
-        # --- Verlust berechnen ---
         loss = F.smooth_l1_loss(state_action_qvals, target_qvals)
         return loss
 
