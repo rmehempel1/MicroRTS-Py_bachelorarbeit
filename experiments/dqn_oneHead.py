@@ -323,6 +323,27 @@ class Agent:
 
         return action
 
+    def action_to_qval(self, single_action):
+        """
+        single_action: list or tensor with 7 integers
+        [action_type, move_dir, harvest_dir, return_dir, produce_dir, produce_type, attack_idx]
+        """
+        a_type = single_action[0]
+        if a_type == 0:
+            return 0
+        elif a_type == 1:
+            return 0 + single_action[1]
+        elif a_type == 2:
+            return 4 + single_action[2]
+        elif a_type == 3:
+            return 8 + single_action[3]
+        elif a_type == 4:
+            return 12 + single_action[5] * 4 + single_action[4]
+        elif a_type == 5:
+            return 40 + single_action[6]
+        else:
+            raise ValueError(f"Ungültiger action_type: {a_type}")
+
     def play_step(self, epsilon=0.0):
         net = self.net
         device = self.device
@@ -335,7 +356,6 @@ class Agent:
         mask = torch.zeros((num_envs, h, w, 89), dtype=torch.bool, device=device)
 
         full_action = np.zeros((num_envs, h, w, 7), dtype=np.int32)
-        single_action=np.zeros((7), dtype=np.int32)
         state_v = torch.tensor(self.state.transpose(0, 3, 1, 2), dtype=torch.float32, device=device)
 
         def sample_valid(mask):
@@ -347,18 +367,24 @@ class Agent:
                 for j in range(w):
                     if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
                         flat_idx = i * grid_size + j
-                        cell_mask_origin = raw_masks[env_i, flat_idx]  # shape [78]
+                        cell_mask_origin = raw_masks[env_i, flat_idx]
                         cell_mask = mask[env_i, i, j]
-                        for k in range(7):  # 7 unit types
-                            if cell_mask_origin[19 + k * 4] == 0:  # check e.g. base north disabled
-                                cell_mask[19 + k * 4: 19 + k * 4 + 4] = 0  # disable all directions
-                        cell_mask[0:18]=cell_mask_origin[0:18]
-                        cell_mask[30:89]=cell_mask_origin[49:78]
 
+                        # Basisaktionen
+                        cell_mask[0:18] = cell_mask_origin[0:18]
 
+                        # PRODUCE kombiniert (28 Einträge)
+                        for t in range(7):  # Typen
+                            for d in range(4):  # Richtungen
+                                idx = 18 + t * 4 + d
+                                type_allowed = cell_mask_origin[22 + t].item()
+                                dir_allowed = cell_mask_origin[18 + d].item()
+                                cell_mask[idx] = type_allowed and dir_allowed
 
+                        # ATTACK
+                        cell_mask[46:89] = cell_mask_origin[49:78]
 
-
+                        # --- Aktionsauswahl ---
                         if np.random.random() < epsilon:
                             a_type = sample_valid(cell_mask[0:6]).item()
                             full_action[env_i, i, j, 0] = a_type
@@ -370,18 +396,18 @@ class Agent:
                             elif a_type == 3:
                                 full_action[env_i, i, j, 3] = sample_valid(cell_mask[14:18]).item()
                             elif a_type == 4:
-                                full_action[env_i, i, j, 4] = sample_valid(cell_mask[18:22]).item()
-                                full_action[env_i, i, j, 5] = sample_valid(cell_mask[22:29]).item()
+                                idx = sample_valid(cell_mask[18:46]).item()
+                                full_action[env_i, i, j, 4] = idx % 4
+                                full_action[env_i, i, j, 5] = idx // 4
                             elif a_type == 5:
-                                full_action[env_i, i, j, 6] = sample_valid(cell_mask[29:78]).item()
+                                full_action[env_i, i, j, 6] = sample_valid(cell_mask[46:89]).item()
                         else:
                             unit_pos = torch.tensor([[j, i]], dtype=torch.float32, device=device)
                             q_vals_v = net(state_v, unit_pos=unit_pos)
-                            masked_q_vals=q_vals_v.masked_fill(~cell_mask, -1e9)
+                            masked_q_vals = q_vals_v.masked_fill(~cell_mask, -1e9)
                             q_val = torch.argmax(masked_q_vals).item()
 
-                            """Konvertiert die Q-vals in eine Einzelaktion"""
-                            single_action=self.qval_to_action(q_val)
+                            single_action = self.qval_to_action(q_val)
                             full_action[env_i, i, j, 0] = single_action["action_type"]
                             full_action[env_i, i, j, 1] = single_action["move_direction"]
                             full_action[env_i, i, j, 2] = single_action["harvest_direction"]
@@ -390,39 +416,46 @@ class Agent:
                             full_action[env_i, i, j, 5] = single_action["produce_type"]
                             full_action[env_i, i, j, 6] = single_action["attack_index"]
 
-
-
         full_action_raw = full_action.copy()
         new_state, reward, is_done, infos = self.env.step(full_action.reshape(1, -1))
         next_raw_masks = self.env.venv.venv.get_action_mask()
 
-        # --- Replay Buffer befüllen ---
-        for env_i in range(self.env.num_envs):
+        # --- Replay Buffer ---
+        for env_i in range(num_envs):
             for i in range(h):
                 for j in range(w):
                     if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
                         flat_idx = i * grid_size + j
 
-                        # Aktuelle Masken aus Torch extrahieren → NumPy
+                        def build_combined_produce_mask(raw_mask):
+                            m = np.zeros(28, dtype=bool)
+                            for t in range(7):
+                                for d in range(4):
+                                    idx = t * 4 + d
+                                    m[idx] = raw_mask[22 + t] and raw_mask[18 + d]
+                            return m
+
                         action_masks = [
                             raw_masks[env_i, flat_idx, 0:6].cpu().numpy(),
                             raw_masks[env_i, flat_idx, 6:10].cpu().numpy(),
                             raw_masks[env_i, flat_idx, 10:14].cpu().numpy(),
                             raw_masks[env_i, flat_idx, 14:18].cpu().numpy(),
-                            raw_masks[env_i, flat_idx, 18:22].cpu().numpy(),
-                            raw_masks[env_i, flat_idx, 22:29].cpu().numpy(),
-                            raw_masks[env_i, flat_idx, 29:78].cpu().numpy(),
+                            np.array([True] * 4),  # unused
+                            np.array([True] * 7),  # unused
+                            build_combined_produce_mask(raw_masks[env_i, flat_idx].cpu().numpy()),
+                            raw_masks[env_i, flat_idx, 49:78].cpu().numpy(),
                         ]
 
-                        next_cell_mask = next_raw_masks[env_i, flat_idx]
+                        next_mask = next_raw_masks[env_i, flat_idx]
                         next_action_masks = [
-                            next_cell_mask[0:6].copy(),
-                            next_cell_mask[6:10].copy(),
-                            next_cell_mask[10:14].copy(),
-                            next_cell_mask[14:18].copy(),
-                            next_cell_mask[18:22].copy(),
-                            next_cell_mask[22:29].copy(),
-                            next_cell_mask[29:78].copy(),
+                            next_mask[0:6].copy(),
+                            next_mask[6:10].copy(),
+                            next_mask[10:14].copy(),
+                            next_mask[14:18].copy(),
+                            np.array([True] * 4),
+                            np.array([True] * 7),
+                            build_combined_produce_mask(next_mask),
+                            next_mask[49:78].copy(),
                         ]
 
                         single_action = np.array(full_action[env_i, i, j], dtype=np.int64)
@@ -457,12 +490,14 @@ class Agent:
 
         return {"done": False}
 
+
     def calc_loss(self, batch, tgt_net, gamma):
         states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks = batch
 
         device = self.device
         B = len(actions)
 
+        # --- Tensor-Vorbereitung ---
         states_v = torch.tensor(states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
         next_states_v = torch.tensor(next_states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
         actions_v = torch.tensor(actions, dtype=torch.int64, device=device)  # [B, 7]
@@ -470,35 +505,30 @@ class Agent:
         done_mask = torch.tensor(dones, dtype=torch.bool, device=device)
         unit_pos = torch.tensor(unit_positions, dtype=torch.long, device=device)
 
-        # Q(s, a) und Q(s', ·) berechnen
+        # --- Q(s, a) & Q(s', ·) ---
         qvals = self.net(states_v, unit_pos=unit_pos)  # [B, 89]
         qvals_next = tgt_net(next_states_v, unit_pos=unit_pos)  # [B, 89]
 
-        # Q-Wert für die tatsächlich gewählte Aktion (in q_val übersetzen)
-        q_indices = torch.tensor([self.qval_to_action(a.tolist()) for a in actions_v], device=device)  # [B]
-        state_action_qvals = qvals[torch.arange(B), q_indices]  # [B]
+        # --- Diskreten q_val-Index berechnen ---
+        q_indices = torch.tensor([self.action_to_qval(a.tolist()) for a in actions_v], device=device)  # [B]
+        state_action_qvals = qvals[torch.arange(B), q_indices]  # Q(s,a) [B]
 
-        # Nächstes TD-Ziel
-        next_qvals = qvals_next.clone()
-
+        # --- TD-Ziele ---
+        target_qvals = torch.zeros(B, device=device)
         for b in range(B):
             if next_action_masks is not None:
                 next_mask = torch.tensor(next_action_masks[b], dtype=torch.bool, device=device)
                 if next_mask.any():
-                    max_q = next_qvals[b][next_mask].max()
+                    max_q = qvals_next[b][next_mask].max()
                 else:
                     max_q = torch.tensor(0.0, device=device)
             else:
-                max_q = next_qvals[b].max()
+                max_q = qvals_next[b].max()
 
-            if done_mask[b]:
-                next_qvals[b] = rewards_v[b]
-            else:
-                next_qvals[b] = rewards_v[b] + gamma * max_q
+            target_qvals[b] = rewards_v[b] if done_mask[b] else rewards_v[b] + gamma * max_q
 
-        expected_qvals = next_qvals[torch.arange(B), q_indices]
-        loss = F.smooth_l1_loss(state_action_qvals, expected_qvals)
-
+        # --- Loss ---
+        loss = F.smooth_l1_loss(state_action_qvals, target_qvals)
         return loss
 def log_episode_to_csv(
     csv_path: str,
