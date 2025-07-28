@@ -761,12 +761,8 @@ if __name__ == "__main__":
         batch = expbuffer.sample(args.batch_size)
         optimizer.zero_grad()
 
-        losses = agent.calc_loss(batch, target_net, gamma=args.gamma)
-        # Summiere alle Losses zu einem einzigen Tensor
-        total_loss = sum(losses)  # Alle sind Tensoren mit requires_grad=True
-
-        optimizer.zero_grad()
-        total_loss.backward()
+        loss = agent.calc_loss(batch, target_net, gamma=args.gamma)
+        loss.backward()
         optimizer.step()
 
         # Logging
