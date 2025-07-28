@@ -274,7 +274,7 @@ class Agent:
         self.state = self.env.reset()
         self.total_reward = 0.0
 
-    def qval_to_action(q_val: int) -> dict:
+    def qval_to_action(self, q_val: int) -> dict:
         """
         Wandelt einen diskreten Q-Wert (0–88) in eine strukturierte Einzelaktion um.
 
@@ -344,7 +344,7 @@ class Agent:
         else:
             raise ValueError(f"Ungültiger action_type: {a_type}")
 
-    def convert_78_to_95_mask(mask_78):
+    def convert_78_to_95_mask(self,mask_78):
         """Konvertiert 78-dim Aktionmaske → 95-diskret"""
         assert mask_78.shape[0] == 78
         m95 = torch.zeros(95, dtype=torch.bool, device=mask_78.device)
