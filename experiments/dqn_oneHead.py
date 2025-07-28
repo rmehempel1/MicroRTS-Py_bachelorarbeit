@@ -195,7 +195,7 @@ class UASDQN(nn.Module):
         4 return
         4*7 produce direction
         49 attack dir"""
-        self.out = nn.Linear(512,89)
+        self.out = nn.Linear(512,95)
 
     def forward(self, x, unit_pos=None):
         # x: [B, C, H, W]
