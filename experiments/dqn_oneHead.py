@@ -624,8 +624,8 @@ if __name__ == "__main__":
         max_steps=args.max_steps,
         render_theme=2,
         ai2s=  (
-    [microrts_ai.workerRushAI for _ in range(num_each)] +
-    [microrts_ai.passiveAI for _ in range(num_envs - num_each)]
+    [microrts_ai.passiveAI for _ in range(num_each)] +
+    [microrts_ai.workerRushAI for _ in range(num_envs - num_each)]
 ),
 
         map_paths=[args.train_maps[0]],
