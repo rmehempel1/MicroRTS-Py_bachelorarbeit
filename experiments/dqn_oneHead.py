@@ -604,7 +604,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
     print("PID: ", os.getpid())
     print(f"Device: {device}")
-
+    #d
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
