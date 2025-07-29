@@ -430,7 +430,7 @@ class Agent:
 
         # --- Schritt ausführen ---
         new_state, reward, is_done, infos = self.env.step(full_action.reshape(1, -1))
-        envs.venv.venv.render(mode="human")
+        #envs.venv.venv.render(mode="human")
         next_raw_masks = self.env.venv.venv.get_action_mask()
 
         # --- Replay Buffer befüllen ---
