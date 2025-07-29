@@ -408,17 +408,17 @@ class Agent:
                                 full_action[env_i, i, j, 5] = prod_idx // 4
                             elif a_type == 5:
                                 full_action[env_i, i, j, 6] = sample_valid(cell_mask[46:95]).item()
-                            print(full_action[env_i,i,j])
+                            #print(full_action[env_i,i,j])
                         else:
                             unit_pos = torch.tensor([[j, i]], dtype=torch.float32, device=device)
                             q_vals_v = net(state_v, unit_pos=unit_pos)
-                            print(cell_mask)
+                            #print(cell_mask)
                             masked_q_vals = q_vals_v.masked_fill(~cell_mask, -1e9)
                             q_val = torch.argmax(masked_q_vals).item()
-                            print(q_vals_v, masked_q_vals, q_val)
+                            #print(q_vals_v, masked_q_vals, q_val)
 
                             single_action = self.qval_to_action(q_val)
-                            print(single_action)
+                            #print(single_action)
                             full_action[env_i, i, j, 0] = single_action["action_type"]
                             full_action[env_i, i, j, 1] = single_action["move_direction"]
                             full_action[env_i, i, j, 2] = single_action["harvest_direction"]
@@ -426,7 +426,7 @@ class Agent:
                             full_action[env_i, i, j, 4] = single_action["produce_direction"]
                             full_action[env_i, i, j, 5] = single_action["produce_type"]
                             full_action[env_i, i, j, 6] = single_action["attack_index"]
-                            print("Agent Aktion:",full_action[env_i,i,j])
+                            #print("Agent Aktion:",full_action[env_i,i,j])
 
         # --- Schritt ausführen ---
         new_state, reward, is_done, infos = self.env.step(full_action.reshape(1, -1))
