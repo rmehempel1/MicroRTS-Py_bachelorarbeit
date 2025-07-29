@@ -17,7 +17,7 @@ from gym.spaces import MultiDiscrete
 from stable_baselines3.common.vec_env import VecEnvWrapper, VecMonitor, VecVideoRecorder
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
-from wandb.cli.cli import agent
+
 
 
 from gym_microrts import microrts_ai
@@ -388,8 +388,9 @@ class Agent:
                         flat_idx = i * h + j
                         cell_mask_78 = raw_masks[env_i, flat_idx]
                         cell_mask = self.convert_78_to_95_mask(cell_mask_78)
-                        mask[env_i, i, j] = cell_mask
 
+                        mask[env_i, i, j] = cell_mask
+                        #print(i,j, cell_mask_78, cell_mask, mask[env_i,i,j])
                         # --- Aktionsauswahl ---
                         if np.random.random() < epsilon:
                             a_type = sample_valid(cell_mask[0:6]).item()
@@ -407,13 +408,17 @@ class Agent:
                                 full_action[env_i, i, j, 5] = prod_idx // 4
                             elif a_type == 5:
                                 full_action[env_i, i, j, 6] = sample_valid(cell_mask[46:95]).item()
+                            print(full_action[env_i,i,j])
                         else:
                             unit_pos = torch.tensor([[j, i]], dtype=torch.float32, device=device)
                             q_vals_v = net(state_v, unit_pos=unit_pos)
+                            print(cell_mask)
                             masked_q_vals = q_vals_v.masked_fill(~cell_mask, -1e9)
                             q_val = torch.argmax(masked_q_vals).item()
+                            print(q_vals_v, masked_q_vals, q_val)
 
                             single_action = self.qval_to_action(q_val)
+                            print(single_action)
                             full_action[env_i, i, j, 0] = single_action["action_type"]
                             full_action[env_i, i, j, 1] = single_action["move_direction"]
                             full_action[env_i, i, j, 2] = single_action["harvest_direction"]
@@ -421,9 +426,11 @@ class Agent:
                             full_action[env_i, i, j, 4] = single_action["produce_direction"]
                             full_action[env_i, i, j, 5] = single_action["produce_type"]
                             full_action[env_i, i, j, 6] = single_action["attack_index"]
+                            print("Agent Aktion:",full_action[env_i,i,j])
 
         # --- Schritt ausführen ---
         new_state, reward, is_done, infos = self.env.step(full_action.reshape(1, -1))
+        envs.venv.venv.render(mode="human")
         next_raw_masks = self.env.venv.venv.get_action_mask()
 
         # --- Replay Buffer befüllen ---
@@ -608,8 +615,8 @@ if __name__ == "__main__":
     """
     reward_weights = np.array([10.0, 3.0, 3.0, 0.0, 5.0, 1.0])
     print("Reward Weights:", reward_weights)
-    num_envs = args.num_bot_envs
-    num_each = num_envs // 2  # ganzzahliger Anteil
+    num_envs = 1#args.num_bot_envs
+    num_each = 1#num_envs // 2  # ganzzahliger Anteil
     envs = MicroRTSGridModeVecEnv(
         num_selfplay_envs=args.num_selfplay_envs,
         num_bot_envs=args.num_bot_envs,
@@ -724,7 +731,7 @@ if __name__ == "__main__":
         frame_idx += 1
         epsilon = max(args.epsilon_final, args.epsilon_start - frame_idx / args.epsilon_decay)
         if frame_idx < warmup_frames:
-            epsilon = 1.0
+            epsilon = 0.0
 
         eval_reward = 0.0
         #if frame_idx % eval_interval == 0:
