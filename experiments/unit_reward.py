@@ -17,7 +17,7 @@ from gym.spaces import MultiDiscrete
 from stable_baselines3.common.vec_env import VecEnvWrapper, VecMonitor, VecVideoRecorder
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
-
+from datetime import datetime
 
 
 from gym_microrts import microrts_ai
@@ -747,7 +747,7 @@ if __name__ == "__main__":
     ]
     reward_counts = {name: 0 for name in reward_names}
 
-    print("Starte Training")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starte Training")
     print("Learning Rate:", args.learning_rate)
 
 
@@ -768,8 +768,8 @@ if __name__ == "__main__":
     # Training
     while frame_idx < args.total_timesteps:
         frame_idx += 1
-        if frame_idx % 10000==0:
-            print("Frame idx: ",frame_idx)
+        if frame_idx % 10000 == 0:
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Frame idx: {frame_idx}")
         epsilon = max(args.epsilon_final, args.epsilon_start - frame_idx / args.epsilon_decay)
         if frame_idx < warmup_frames:
             epsilon = 1.0
@@ -805,7 +805,7 @@ if __name__ == "__main__":
         optimizer.step()
     # Training fertig – final speichern
     torch.save(policy_net.state_dict(), f"./{args.exp_name}/{args.exp_name}_final.pth")
-    print("Training abgeschlossen.")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]Training abgeschlossen.")
 
     envs.close()
 
