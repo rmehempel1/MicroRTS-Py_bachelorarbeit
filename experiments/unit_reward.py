@@ -468,8 +468,18 @@ class Agent:
         #envs.venv.venv.render(mode="human")
         next_raw_masks = self.env.venv.venv.get_action_mask()
 
+
+
+
         # --- Replay Buffer befüllen ---
         for env_i in range(num_envs):
+            # Win-Loose Reward
+            if is_done[env_i]:
+                win_loss_reward = reward_weights[0] * infos[env_i]["microrts_stats"].get("WinLossRewardFunction", 0.0)
+                for i in range(h):
+                    for j in range(w):
+                        if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
+                            unit_reward_map[(env_i, i, j)] += win_loss_reward
             for i in range(h):
                 for j in range(w):
                     if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
