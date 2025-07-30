@@ -422,11 +422,22 @@ class Agent:
                             full_action[env_i, i, j]=self.qval_to_action(single_action)
 
                         else:
-                            unit_pos = torch.tensor([[j, i]], dtype=torch.float32, device=device)
-                            q_vals_v = net(state_v, unit_pos=unit_pos)
+
+                            # Eingabe vorbereiten für genau eine Unit:
+                            state_v_single = state_v[env_i:env_i + 1]  # Form: [1, C, H, W]
+                            unit_pos = torch.tensor([[j, i]], dtype=torch.float32, device=device)  # Form: [1, 2]
+
+                            # Netz aufrufen
+                            q_vals_v = net(state_v_single, unit_pos=unit_pos)[0]  # jetzt Shape: [89]
+
+                            # Maskierung anwenden
                             masked_q_vals = q_vals_v.masked_fill(~cell_mask, -1e9)
+
+                            # Beste gültige Aktion auswählen
                             q_val = torch.argmax(masked_q_vals).item()
-                            full_action[env_i,i,j]=self.qval_to_action(q_val)
+
+                            # Umwandlung in Aktionsarray
+                            full_action[env_i, i, j] = self.qval_to_action(q_val)
 
 
         # --- Schritt ausführen ---
