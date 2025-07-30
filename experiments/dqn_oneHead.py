@@ -195,7 +195,7 @@ class UASDQN(nn.Module):
         4 return
         4*7 produce direction
         49 attack dir"""
-        self.out = nn.Linear(512,95)
+        self.out = nn.Linear(512,89)
 
     def forward(self, x, unit_pos=None):
         # x: [B, C, H, W]
@@ -274,52 +274,39 @@ class Agent:
         self.state = self.env.reset()
         self.total_reward = 0.0
 
-    def qval_to_action(self, q_val: int) -> dict:
+    def qval_to_action(self, q_val: int) -> np.ndarray:
         """
-        Wandelt einen diskreten Q-Wert (0–88) in eine strukturierte Einzelaktion um.
+        Wandelt einen diskreten Q-Wert (0–88) in ein Aktionsarray mit 7 Feldern um.
 
-        Gibt ein Dictionary mit den Feldern:
-        - action_type: 1=move, 2=harvest, 3=return, 4=produce, 5=attack
-        - move_direction, harvest_direction, return_direction: 0=north, 1=east, 2=south, 3=west
-        - produce_type: 0=ressource, ..., 6=ranged
-        - produce_direction: 0–3
-        - attack_index: 0–48 (relative Zielposition im 7x7-Angriffsraster)
+        Rückgabe: Array mit:
+        [action_type, move_dir, harvest_dir, return_dir, produce_dir, produce_type, attack_idx]
         """
         if not (0 <= q_val <= 88):
             raise ValueError("q_val muss im Bereich 0–88 liegen.")
 
-        action = {
-            "action_type": 0,
-            "move_direction": 0,
-            "harvest_direction": 0,
-            "return_direction": 0,
-            "produce_direction": 0,
-            "produce_type": 0,
-            "attack_index": 0,
-        }
+        action = np.zeros(7, dtype=np.int32)
 
         if 0 <= q_val < 4:
-            action["action_type"] = 1  # move
-            action["move_direction"] = q_val
+            action[0] = 1  # action_type: move
+            action[1] = q_val
 
         elif 4 <= q_val < 8:
-            action["action_type"] = 2  # harvest
-            action["harvest_direction"] = q_val - 4
+            action[0] = 2  # harvest
+            action[2] = q_val - 4
 
         elif 8 <= q_val < 12:
-            action["action_type"] = 3  # return
-            action["return_direction"] = q_val - 8
+            action[0] = 3  # return
+            action[3] = q_val - 8
 
         elif 12 <= q_val < 40:
-            action["action_type"] = 4  # produce
+            action[0] = 4  # produce
             produce_idx = q_val - 12
-            action["produce_type"] = produce_idx // 4
-            action["produce_direction"] = produce_idx % 4
+            action[5] = produce_idx // 4  # produce_type
+            action[4] = produce_idx % 4  # produce_dir
 
         elif 40 <= q_val <= 88:
-            action["action_type"] = 5  # attack
-            attack_idx = q_val - 40
-            action["attack_index"] = attack_idx
+            action[0] = 5  # attack
+            action[6] = q_val - 40
 
         return action
 
@@ -344,40 +331,69 @@ class Agent:
         else:
             raise ValueError(f"Ungültiger action_type: {a_type}")
 
-    def convert_78_to_95_mask(self,mask_78):
-        """Konvertiert 78-dim Aktionmaske → 95-diskret"""
+    def convert_78_to_89_mask(self, mask_78):
+        """Konvertiert 78-dim Aktionmaske → 89-diskrete Aktionsmaske"""
         assert mask_78.shape[0] == 78
-        m95 = torch.zeros(95, dtype=torch.bool, device=mask_78.device)
+        if isinstance(mask_78, np.ndarray):
+            mask_78 = torch.from_numpy(mask_78).bool()
+        m89 = torch.zeros(89, dtype=torch.bool, device=mask_78.device)
 
-        # 0–17 direkt übernehmen
-        m95[0:18] = mask_78[0:18]
+        # Action types
+        is_move = mask_78[1]
+        is_harvest = mask_78[2]
+        is_return = mask_78[3]
+        is_produce = mask_78[4]
+        is_attack = mask_78[5]
 
-        # 18–45: produce type × direction (28 Kombinationen)
-        for t in range(7):
-            if mask_78[22 + t]:  # Typ erlaubt
-                for d in range(4):
-                    if mask_78[18 + d]:  # Richtung erlaubt
-                        idx = 18 + t * 4 + d
-                        m95[idx] = True
+        # MOVE direction (mask_78[6–9]) → m89[0–3]
+        if is_move:
+            for i in range(4):
+                if mask_78[6 + i]:
+                    m89[i] = True
 
-        # 46–94: Attack (49 Stück)
-        m95[46:95] = mask_78[29:78]
-        return m95
+        # HARVEST direction (mask_78[10–13]) → m89[4–7]
+        if is_harvest:
+            for i in range(4):
+                if mask_78[10 + i]:
+                    m89[4 + i] = True
+
+        # RETURN direction (mask_78[14–17]) → m89[8–11]
+        if is_return:
+            for i in range(4):
+                if mask_78[14 + i]:
+                    m89[8 + i] = True
+
+        # PRODUCE (type [22–28] × direction [18–21]) → m89[12–39]
+        if is_produce:
+            for type_idx in range(7):  # 7 Typen: ressource ... ranged
+                if mask_78[22 + type_idx]:
+                    for dir_idx in range(4):  # 4 Richtungen: N, E, S, W
+                        if mask_78[18 + dir_idx]:
+                            m89[12 + 4 * type_idx + dir_idx] = True
+
+        if is_attack:
+        # Attack (mask_78[29–77]) → m89[40–88]
+            for i in range(49):
+                if mask_78[29 + i]:
+                    m89[40 + i] = True
+
+        return m89
 
     def play_step(self, epsilon=0.0):
         net = self.net
         device = self.device
 
-        raw_masks_np = self.env.venv.venv.get_action_mask()  # [num_envs, H*W, 78]
-        raw_masks = torch.from_numpy(raw_masks_np).to(device=device).bool()
+        raw_masks_np = self.env.venv.venv.get_action_mask()
+        raw_masks = torch.from_numpy(raw_masks_np).to(device=device).bool() # [num_envs, H*W, 78]
         _, h, w, _ = self.state.shape
         num_envs = self.env.num_envs
-        mask = torch.zeros((num_envs, h, w, 95), dtype=torch.bool, device=device)
+
 
         full_action = np.zeros((num_envs, h, w, 7), dtype=np.int32)
         state_v = torch.tensor(self.state.transpose(0, 3, 1, 2), dtype=torch.float32, device=device)
 
         def sample_valid(mask):
+            """ Gibt einen zufällig ausgewählten Index zurück, bei dem die Eingabemaske True ist."""
             idx = torch.where(mask)[0]
             return idx[torch.randint(len(idx), (1,))] if len(idx) > 0 else torch.tensor(0, device=device)
 
@@ -385,50 +401,36 @@ class Agent:
             for i in range(h):
                 for j in range(w):
                     if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
-                        flat_idx = i * h + j
-                        cell_mask_78 = raw_masks[env_i, flat_idx]
-                        cell_mask = self.convert_78_to_95_mask(cell_mask_78)
-
-                        mask[env_i, i, j] = cell_mask
-                        #print(i,j, cell_mask_78, cell_mask, mask[env_i,i,j])
+                        flat_idx = i * h + j                                                                            # wird hierndie richtige Zelle ausgewählt, stimmt der Flat:index?
+                        cell_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat_idx])
                         # --- Aktionsauswahl ---
                         if np.random.random() < epsilon:
-                            a_type = sample_valid(cell_mask[0:6]).item()
+                            #Originale Maske für die gültigen Action Types
+                            a_type = sample_valid(raw_masks[env_i, flat_idx][0:6]).item()
                             full_action[env_i, i, j, 0] = a_type
-
+                            #Mit konvertierter Maske
                             if a_type == 1:
-                                full_action[env_i, i, j, 1] = sample_valid(cell_mask[6:10]).item()
+                                single_action= sample_valid(cell_mask[0:4]).item()
                             elif a_type == 2:
-                                full_action[env_i, i, j, 2] = sample_valid(cell_mask[10:14]).item()
+                                single_action = sample_valid(cell_mask[4:8]).item()
                             elif a_type == 3:
-                                full_action[env_i, i, j, 3] = sample_valid(cell_mask[14:18]).item()
+                                single_action = sample_valid(cell_mask[8:12]).item()
                             elif a_type == 4:
-                                prod_idx = sample_valid(cell_mask[18:46]).item()
-                                full_action[env_i, i, j, 4] = prod_idx % 4
-                                full_action[env_i, i, j, 5] = prod_idx // 4
+                                single_action = sample_valid(cell_mask[12:40]).item()
                             elif a_type == 5:
-                                full_action[env_i, i, j, 6] = sample_valid(cell_mask[46:95]).item()
-                            #print(full_action[env_i,i,j])
+                                single_action = sample_valid(cell_mask[40:89]).item()
+                            full_action[env_i, i, j]=self.qval_to_action(single_action)
+
                         else:
                             unit_pos = torch.tensor([[j, i]], dtype=torch.float32, device=device)
                             q_vals_v = net(state_v, unit_pos=unit_pos)
-                            #print(cell_mask)
                             masked_q_vals = q_vals_v.masked_fill(~cell_mask, -1e9)
                             q_val = torch.argmax(masked_q_vals).item()
-                            #print(q_vals_v, masked_q_vals, q_val)
+                            full_action[env_i,i,j]=self.qval_to_action(q_val)
 
-                            single_action = self.qval_to_action(q_val)
-                            #print(single_action)
-                            full_action[env_i, i, j, 0] = single_action["action_type"]
-                            full_action[env_i, i, j, 1] = single_action["move_direction"]
-                            full_action[env_i, i, j, 2] = single_action["harvest_direction"]
-                            full_action[env_i, i, j, 3] = single_action["return_direction"]
-                            full_action[env_i, i, j, 4] = single_action["produce_direction"]
-                            full_action[env_i, i, j, 5] = single_action["produce_type"]
-                            full_action[env_i, i, j, 6] = single_action["attack_index"]
-                            #print("Agent Aktion:",full_action[env_i,i,j])
 
         # --- Schritt ausführen ---
+        prev_state = self.state.copy()
         new_state, reward, is_done, infos = self.env.step(full_action.reshape(1, -1))
         #envs.venv.venv.render(mode="human")
         next_raw_masks = self.env.venv.venv.get_action_mask()
@@ -439,15 +441,13 @@ class Agent:
                 for j in range(w):
                     if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
                         flat_idx = i * h + j
-                        action_mask = self.convert_78_to_95_mask(raw_masks[env_i, flat_idx]).cpu().numpy()
-                        next_action_mask = self.convert_78_to_95_mask(
-                            torch.from_numpy(next_raw_masks[env_i, flat_idx]).to(device)
-                        ).cpu().numpy()
-
+                        action_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat_idx])
+                        next_action_mask = self.convert_78_to_89_mask(next_raw_masks[env_i, flat_idx])
                         single_action = np.array(full_action[env_i, i, j], dtype=np.int64)
+                        single_action = self.action_to_qval(single_action)
 
                         self.exp_buffer.append(
-                            self.state[env_i],
+                            prev_state[env_i],
                             single_action,
                             reward[env_i],
                             is_done[env_i],
@@ -469,7 +469,7 @@ class Agent:
                 raw = infos[env_i].get("raw_rewards", None)
                 steps = self.episode_steps[env_i]
 
-                print(f"[Env {env_i} | Episode {ep}] Reward: {shaped:.2f}, RawReward: {raw}, Steps: {steps}")
+                print(f"[Env {env_i} | Episode {ep}] Reward: {shaped:.2f}, RawReward: {raw}, Steps: {steps}, Epsilon: {epsilon}")
 
                 self.env_episode_counter[env_i] += 1
                 self.total_rewards[env_i] = 0.0
@@ -478,8 +478,6 @@ class Agent:
         return {"done": False}
 
     def calc_loss(self, batch, tgt_net, gamma):
-        import torch.nn.functional as F
-
         states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks = batch
         device = self.device
         B = len(actions)
@@ -487,29 +485,25 @@ class Agent:
         # --- Tensor-Vorbereitung ---
         states_v = torch.tensor(states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
         next_states_v = torch.tensor(next_states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
-        actions_v = torch.tensor(actions, dtype=torch.int64, device=device)  # [B, 7]
+        actions_v = torch.tensor(actions, dtype=torch.int64, device=device)  # jetzt [B]
         rewards_v = torch.tensor(rewards, dtype=torch.float32, device=device)
         done_mask = torch.tensor(dones, dtype=torch.bool, device=device)
         unit_pos = torch.tensor(unit_positions, dtype=torch.long, device=device)
 
         # --- Q(s, a) und Q(s', ·) berechnen ---
-        qvals = self.net(states_v, unit_pos=unit_pos)  # [B, 95]
-        qvals_next = tgt_net(next_states_v, unit_pos=unit_pos)  # [B, 95]
+        qvals = self.net(states_v, unit_pos=unit_pos)  # [B, 89]
+        qvals_next = tgt_net(next_states_v, unit_pos=unit_pos)  # [B, 89]
 
-        # --- Aktionsindex bestimmen ---
-        q_indices = torch.tensor(
-            [self.action_to_qval(a.tolist()) for a in actions_v], device=device
-        )
-        state_action_qvals = qvals[torch.arange(B), q_indices]  # Q(s,a)
+        # --- Q(s,a) extrahieren ---
+        state_action_qvals = qvals[torch.arange(B), actions_v]  # [B]
 
-        # --- TD-Ziel berechnen ---
+        # --- Zielwerte berechnen ---
         target_qvals = torch.zeros(B, dtype=torch.float32, device=device)
         for b in range(B):
             if next_action_masks is not None:
-                # Umwandlung zurück zu Tensor
-                next_mask_95 = torch.tensor(next_action_masks[b], dtype=torch.bool, device=device)
-                if next_mask_95.any():
-                    max_q = qvals_next[b][next_mask_95].max()
+                next_mask_89 = next_action_masks[b].to(dtype=torch.bool, device=device)
+                if next_mask_89.any():
+                    max_q = qvals_next[b][next_mask_89].max()
                 else:
                     max_q = torch.tensor(0.0, device=device)
             else:
@@ -517,6 +511,7 @@ class Agent:
 
             target_qvals[b] = rewards_v[b] if done_mask[b] else rewards_v[b] + gamma * max_q
 
+        # --- Loss berechnen ---
         loss = F.smooth_l1_loss(state_action_qvals, target_qvals)
         return loss
 
@@ -731,7 +726,7 @@ if __name__ == "__main__":
         frame_idx += 1
         epsilon = max(args.epsilon_final, args.epsilon_start - frame_idx / args.epsilon_decay)
         if frame_idx < warmup_frames:
-            epsilon = 1.0
+            epsilon = 0.0
 
         eval_reward = 0.0
         #if frame_idx % eval_interval == 0:
