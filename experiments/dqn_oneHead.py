@@ -610,8 +610,8 @@ if __name__ == "__main__":
     """
     reward_weights = np.array([10.0, 3.0, 3.0, 0.0, 5.0, 1.0])
     print("Reward Weights:", reward_weights)
-    num_envs = 1#args.num_bot_envs
-    num_each = 1#num_envs // 2  # ganzzahliger Anteil
+    num_envs = args.num_bot_envs
+    num_each = num_envs // 2  # ganzzahliger Anteil
     envs = MicroRTSGridModeVecEnv(
         num_selfplay_envs=args.num_selfplay_envs,
         num_bot_envs=args.num_bot_envs,
