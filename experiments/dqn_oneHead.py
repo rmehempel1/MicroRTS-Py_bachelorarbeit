@@ -495,7 +495,7 @@ class Agent:
 
                     print(
                         f"[Env {env_i} | Ep {ep}] R: {shaped:.2f}, Steps: {steps}, Eps: {epsilon:.2f}, Raw:\t{raw_str}")
-                    print(f"\t{'':<25}\t" + "\t".join(keys))
+
 
 
 
