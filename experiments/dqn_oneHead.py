@@ -419,7 +419,10 @@ class Agent:
                                 single_action = sample_valid(cell_mask[12:40]).item()
                             elif a_type == 5:
                                 single_action = sample_valid(cell_mask[40:89]).item()
+                            else:
+                                single_action = sample_valid(cell_mask).item()
                             full_action[env_i, i, j]=self.qval_to_action(single_action)
+
 
                         else:
 
