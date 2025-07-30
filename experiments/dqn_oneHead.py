@@ -114,6 +114,8 @@ def parse_args():
                         help="Anzahl der Schritte mit ausschließlich Exploration")
     parser.add_argument("--buffer-memory", type=int, default=1000000,
                         help="Größe des speichers für den Replay Buffer")
+    parser.add_argument("--save-network", type=int, default=300_000,
+                        help="Wie häufig das Netz gespeichert werden soll")
 
     args = parser.parse_args()
     if not args.seed:
@@ -382,7 +384,7 @@ class Agent:
     def play_step(self, epsilon=0.0):
         net = self.net
         device = self.device
-
+        episode_results = []
         raw_masks_np = self.env.venv.venv.get_action_mask()
         raw_masks = torch.from_numpy(raw_masks_np).to(device=device).bool() # [num_envs, H*W, 78]
         _, h, w, _ = self.state.shape
@@ -483,18 +485,20 @@ class Agent:
 
                 steps = self.episode_steps[env_i]
                 raw_stats = infos[env_i].get("microrts_stats", {})
-                if raw_stats:
-                    raw_simple = {k.replace("RewardFunction", ""): round(v, 2)
-                                  for k, v in raw_stats.items() if not k.startswith("discounted_")}
+                episode_info = {
+                    "env": env_i,
+                    "episode": ep,
+                    "reward": shaped,
+                    "steps": steps,
+                    "epsilon": epsilon
+                }
 
-                    # Überschriften sortieren
-                    keys = ["WinLoss", "ResourceGather", "ProduceWorker", "ProduceBuilding", "Attack",
-                            "ProduceCombatUnit"]
-                    values = [raw_simple.get(k, 0.0) for k in keys]
-                    raw_str = "\t".join(f"{v:>6.2f}" for v in values)
+                # Nur rohe Rewards ohne 'discounted'
+                for k in ["WinLoss", "ResourceGather", "ProduceWorker", "ProduceBuilding", "Attack",
+                          "ProduceCombatUnit"]:
+                    episode_info[k] = raw_stats.get(f"{k}RewardFunction", 0.0)
 
-                    print(
-                        f"[Env {env_i} | Ep {ep}] R: {shaped:.2f}, Steps: {steps}, Eps: {epsilon:.2f}, Raw:\t{raw_str}")
+                episode_results.append(episode_info)
 
 
 
@@ -503,7 +507,7 @@ class Agent:
                 self.total_rewards[env_i] = 0.0
                 self.episode_steps[env_i] = 0
 
-        return {"done": False}
+        return {"done": False, "episode_stats": episode_results}
 
     def calc_loss(self, batch, tgt_net, gamma):
         states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks = batch
@@ -748,7 +752,7 @@ if __name__ == "__main__":
     agent = Agent(env=envs, exp_buffer=expbuffer, net=policy_net, device=device)
 
     print(f"Total trainierbare Parameter: {sum(p.numel() for p in policy_net.parameters() if p.requires_grad)}")
-
+    torch.save(policy_net.state_dict(), f"./{args.exp_name}/{args.exp_name}_initial.pth")
     # Training
     while frame_idx < args.total_timesteps:
         frame_idx += 1
@@ -756,45 +760,31 @@ if __name__ == "__main__":
         if frame_idx < warmup_frames:
             epsilon = 1.0
 
-        eval_reward = 0.0
-        #if frame_idx % eval_interval == 0:
-            #eval_reward = evaluate(agent, eval_env, device=device)
-            #print(f"[EVAL] Frame {frame_idx} Durchschnittlicher Reward: {eval_reward:.2f}")
-
-        # Schritt ausführen
-        #print("frame:" ,frame_idx)
         step_info = agent.play_step(epsilon=epsilon)
-
-        """        for name, value in zip(reward_names, raw_rewards):
-            reward_counts[name] += value"""
+        for ep_data in step_info.get("episode_stats", []):
+            with open(f"./{args.exp_name}/{args.exp_name}_train_log.csv", "a") as f:
+                if f.tell() == 0:
+                    header = list(ep_data.keys())
+                    f.write(",".join(header) + "\n")
+                values = [str(ep_data[k]) for k in header]
+                f.write(",".join(values) + "\n")
 
         if len(expbuffer) < args.batch_size:
-            #print("buffer: ", len(expbuffer))
             continue
-        #print("buffer:", len(expbuffer))
-
         # Target-Sync
         if frame_idx % args.sync_interval == 0:
             target_net.load_state_dict(policy_net.state_dict())
-
         # Checkpoint speichern
-        if frame_idx % 300000 == 0:
+        if frame_idx % args.save_network == 0:
             torch.save(policy_net.state_dict(), f"checkpoints/{args.exp_name}_{frame_idx}.pth")
-
         # Training
         batch = expbuffer.sample(args.batch_size)
         optimizer.zero_grad()
-
         loss = agent.calc_loss(batch, target_net, gamma=args.gamma)
         loss.backward()
         optimizer.step()
-
-        # Logging
-
-
-
     # Training fertig – final speichern
-    torch.save(policy_net.state_dict(), os.path.join(model_dir, f"{args.exp_name}_final.pth"))
+    torch.save(policy_net.state_dict(), f"./{args.exp_name}/{args.exp_name}_final.pth")
     print("Training abgeschlossen.")
 
     envs.close()
