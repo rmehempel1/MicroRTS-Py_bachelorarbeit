@@ -773,11 +773,17 @@ if __name__ == "__main__":
             epsilon = 1.0
 
         step_info = agent.play_step(epsilon=epsilon)
+        log_path = f"./{args.exp_name}/{args.exp_name}_train_log.csv"
+        file_exists = os.path.exists(log_path)
+
         for ep_data in step_info.get("episode_stats", []):
-            with open(f"./{args.exp_name}/{args.exp_name}_train_log.csv", "a") as f:
-                if f.tell() == 0:
+            with open(log_path, "a") as f:
+                if not file_exists or os.stat(log_path).st_size == 0:
                     header = list(ep_data.keys())
                     f.write(",".join(header) + "\n")
+                else:
+                    header = list(ep_data.keys())  # trotzdem notwendig!
+
                 values = [str(ep_data[k]) for k in header]
                 f.write(",".join(values) + "\n")
 
