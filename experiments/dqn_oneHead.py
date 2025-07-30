@@ -640,7 +640,7 @@ if __name__ == "__main__":
     ([microrts_ai.passiveAI for _ in range(args.num_bot_envs // 2)] +
           [microrts_ai.workerRushAI for _ in range(args.num_bot_envs // 2)]),
     """
-    reward_weights = np.array([10.0, 3.0, 3.0, 0.0, 5.0, 1.0])
+    reward_weights = np.array([50.0, 3.0, 3.0, 0.0, 5.0, 1.0])
     print("Reward Weights:", reward_weights)
     num_envs = args.num_bot_envs
     num_each = num_envs // 2  # ganzzahliger Anteil
@@ -662,21 +662,6 @@ if __name__ == "__main__":
     )
     envs = MicroRTSStatsRecorder(envs, args.gamma)
     envs = VecMonitor(envs)
-    """
-    eval_env = MicroRTSGridModeVecEnv(
-        num_selfplay_envs=0,
-        num_bot_envs=1,
-        partial_obs=args.partial_obs,
-        max_steps=args.max_steps,
-        render_theme=2,
-        ai2s=[microrts_ai.passiveAI for _ in range(args.num_bot_envs)],
-        map_paths=[args.train_maps[0]],
-        reward_weight=reward_weights,
-        cycle_maps=args.train_maps
-    )
-    eval_env = VecMonitor(eval_env)
-    #eval_env.seed(args.seed + 999)
-    """
     if args.capture_video:
         envs = VecVideoRecorder(
             envs, f"videos/{experiment_name}", record_video_trigger=lambda x: x % 100000 == 0, video_length=2000
