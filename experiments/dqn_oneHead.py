@@ -477,10 +477,18 @@ class Agent:
             if is_done[env_i]:
                 ep = self.env_episode_counter[env_i]
                 shaped = self.total_rewards[env_i]
-                raw = infos[env_i].get("microrts_stats", infos[env_i].get("raw_rewards", None))
-                steps = self.episode_steps[env_i]
 
-                print(f"[Env {env_i} | Episode {ep}] Reward: {shaped:.2f}, RawReward: {raw}, Steps: {steps}, Epsilon: {epsilon}")
+                steps = self.episode_steps[env_i]
+                raw_stats = infos[env_i].get("microrts_stats", {})
+                if raw_stats:
+                    raw_simple = {k.replace("RewardFunction", ""): round(v, 2)
+                                  for k, v in raw_stats.items() if not k.startswith("discounted_")}
+                    print(
+                        f"[Env {env_i} | Ep {ep}] R: {shaped:.2f}, Steps: {steps}, Eps: {epsilon:.2f}, Raw: {raw_simple}")
+                else:
+                    print(f"[Env {env_i} | Ep {ep}] R: {shaped:.2f}, Steps: {steps}, Eps: {epsilon:.2f}")
+
+
 
                 self.env_episode_counter[env_i] += 1
                 self.total_rewards[env_i] = 0.0
