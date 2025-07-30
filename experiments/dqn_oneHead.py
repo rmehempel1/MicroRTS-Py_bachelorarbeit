@@ -477,7 +477,7 @@ class Agent:
             if is_done[env_i]:
                 ep = self.env_episode_counter[env_i]
                 shaped = self.total_rewards[env_i]
-                raw = infos[env_i].get("raw_rewards", None)
+                raw = infos[env_i].get("microrts_stats", infos[env_i].get("raw_rewards", None))
                 steps = self.episode_steps[env_i]
 
                 print(f"[Env {env_i} | Episode {ep}] Reward: {shaped:.2f}, RawReward: {raw}, Steps: {steps}, Epsilon: {epsilon}")
@@ -747,12 +747,6 @@ if __name__ == "__main__":
         # Schritt ausführen
         #print("frame:" ,frame_idx)
         step_info = agent.play_step(epsilon=epsilon)
-        #envs.venv.venv.render(mode="human")
-        #done = step_info["done"]
-        #print("done: ", done)
-        #reward = step_info["reward"]
-        #infos = step_info["infos"]
-        #raw_rewards = sum(info.get("raw_rewards", 0.0) for info in infos)
 
         """        for name, value in zip(reward_names, raw_rewards):
             reward_counts[name] += value"""
