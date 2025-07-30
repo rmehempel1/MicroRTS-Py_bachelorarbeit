@@ -483,10 +483,16 @@ class Agent:
                 if raw_stats:
                     raw_simple = {k.replace("RewardFunction", ""): round(v, 2)
                                   for k, v in raw_stats.items() if not k.startswith("discounted_")}
+
+                    # Überschriften sortieren
+                    keys = ["WinLoss", "ResourceGather", "ProduceWorker", "ProduceBuilding", "Attack",
+                            "ProduceCombatUnit"]
+                    values = [raw_simple.get(k, 0.0) for k in keys]
+                    raw_str = "\t".join(f"{v:>6.2f}" for v in values)
+
                     print(
-                        f"[Env {env_i} | Ep {ep}] R: {shaped:.2f}, Steps: {steps}, Eps: {epsilon:.2f}, Raw: {raw_simple}")
-                else:
-                    print(f"[Env {env_i} | Ep {ep}] R: {shaped:.2f}, Steps: {steps}, Eps: {epsilon:.2f}")
+                        f"[Env {env_i} | Ep {ep}] R: {shaped:.2f}, Steps: {steps}, Eps: {epsilon:.2f}, Raw:\t{raw_str}")
+                    print(f"\t{'':<25}\t" + "\t".join(keys))
 
 
 
@@ -745,7 +751,7 @@ if __name__ == "__main__":
         frame_idx += 1
         epsilon = max(args.epsilon_final, args.epsilon_start - frame_idx / args.epsilon_decay)
         if frame_idx < warmup_frames:
-            epsilon = 0.0
+            epsilon = 1.0
 
         eval_reward = 0.0
         #if frame_idx % eval_interval == 0:
