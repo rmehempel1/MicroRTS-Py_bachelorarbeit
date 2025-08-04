@@ -2,10 +2,8 @@ import argparse
 import os
 import random
 import csv
-import subprocess
 import time
 from distutils.util import strtobool
-from typing import List
 from collections import deque
 
 import numpy as np
@@ -17,13 +15,10 @@ from gym.spaces import MultiDiscrete
 from stable_baselines3.common.vec_env import VecEnvWrapper, VecMonitor, VecVideoRecorder
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
-
-
+from datetime import datetime
 
 from gym_microrts import microrts_ai
 from gym_microrts.envs.vec_env import MicroRTSGridModeVecEnv
-
-
 
 def parse_args():
     # fmt: off
@@ -741,6 +736,8 @@ if __name__ == "__main__":
     # Training
     while frame_idx < args.total_timesteps:
         frame_idx += 1
+        if frame_idx % 10000 == 0:
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Frame idx: {frame_idx}")
         epsilon = max(args.epsilon_final, args.epsilon_start - frame_idx / args.epsilon_decay)
         if frame_idx < warmup_frames:
             epsilon = 1.0
@@ -773,6 +770,8 @@ if __name__ == "__main__":
     print("Training abgeschlossen.")
 
     envs.close()
+
+
 
 
 
