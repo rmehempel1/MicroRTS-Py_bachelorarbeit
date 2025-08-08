@@ -781,7 +781,7 @@ if __name__ == "__main__":
     optimizer = torch.optim.Adam(policy_net.parameters(), lr=args.learning_rate)
 
     # Agent vorbereiten
-    agent = Agent(env=envs, exp_buffer=expbuffer, net=policy_net, device=device)
+    agent = Agent(env=envs, exp_buffer=expbuffer, net=policy_net, device=device, reward_weights=reward_weights)
 
     print(f"Total trainierbare Parameter: {sum(p.numel() for p in policy_net.parameters() if p.requires_grad)}")
     torch.save(policy_net.state_dict(), f"./{args.exp_name}/{args.exp_name}_initial.pth")
