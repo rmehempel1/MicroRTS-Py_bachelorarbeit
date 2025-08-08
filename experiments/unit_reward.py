@@ -257,7 +257,7 @@ class ReplayBuffer:
 
         return states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks
 class Agent:
-    def __init__(self, env, exp_buffer, net, device="cpu"):
+    def __init__(self, env, exp_buffer, net, device="cpu", reward_weights=None):
         self.env=env
         self.device=device
         self.exp_buffer = exp_buffer
@@ -268,6 +268,7 @@ class Agent:
         self.env_episode_counter = [0 for _ in range(self.env.num_envs)]
         self.total_rewards = [0.0 for _ in range(self.env.num_envs)]
         self.episode_steps = [0 for _ in range(self.env.num_envs)]
+        self.reward_weights = reward_weights
 
     def _reset(self):
         """
@@ -382,6 +383,7 @@ class Agent:
         return m89
 
     def play_step(self, epsilon=0.0):
+
         net = self.net
         device = self.device
         episode_results = []
@@ -401,69 +403,86 @@ class Agent:
             idx = torch.where(mask)[0]
             return idx[torch.randint(len(idx), (1,))] if len(idx) > 0 else torch.tensor(0, device=device)
 
+
+
         for env_i in range(num_envs):
             for i in range(h):
                 for j in range(w):
                     if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
-                        reward = 0.0
-                        flat_idx = i * h + j                                                                            # wird hierndie richtige Zelle ausgewählt, stimmt der Flat:index?
+
+                        flat_idx = i * w + j  # wird hierndie richtige Zelle ausgewählt, stimmt der Flat:index?
+
                         cell_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat_idx])
-                        # --- Aktionsauswahl ---
-                        if np.random.random() < epsilon:
-                            #Originale Maske für die gültigen Action Types
-                            a_type = sample_valid(raw_masks[env_i, flat_idx][0:6]).item()
-                            full_action[env_i, i, j, 0] = a_type
-                            #Mit konvertierter Maske
-                            if a_type == 1:
-                                single_action= sample_valid(cell_mask[0:4]).item()
-                            elif a_type == 2:
-                                single_action = sample_valid(cell_mask[4:8]).item()
-                            elif a_type == 3:
-                                single_action = sample_valid(cell_mask[8:12]).item()
-                            elif a_type == 4:
-                                single_action = sample_valid(cell_mask[12:40]).item()
-                            elif a_type == 5:
-                                single_action = sample_valid(cell_mask[40:89]).item()
+
+                        if cell_mask.any():
+                            """Entgegen Dokumentation ist 11 Friendly und 12 Enemy
+                            21 ist Current Action None Plane"""
+                            #print(i,j)
+
+
+
+                            # --- Aktionsauswahl ---
+                            if np.random.random() < epsilon:
+                                #Originale Maske für die gültigen Action Types
+                                a_type = sample_valid(raw_masks[env_i, flat_idx][0:6]).item()
+                                full_action[env_i, i, j, 0] = a_type
+                                #Mit konvertierter Maske
+                                if a_type == 1:
+                                    single_action= sample_valid(cell_mask[0:4]).item()
+                                elif a_type == 2:
+                                    single_action = sample_valid(cell_mask[4:8]).item()
+                                elif a_type == 3:
+                                    single_action = sample_valid(cell_mask[8:12]).item()
+                                elif a_type == 4:
+                                    single_action = sample_valid(cell_mask[12:40]).item()
+                                elif a_type == 5:
+                                    single_action = sample_valid(cell_mask[40:89]).item()
+                                else:
+                                    single_action = sample_valid(cell_mask).item()
+                                full_action[env_i, i, j]=self.qval_to_action(single_action)
+
+
                             else:
-                                single_action = sample_valid(cell_mask).item()
-                            full_action[env_i, i, j]=self.qval_to_action(single_action)
+
+                                # Eingabe vorbereiten für genau eine Unit:
+                                state_v_single = state_v[env_i:env_i + 1]  # Form: [1, C, H, W] (state_v[env_i] wäre [C,H,W] CNN erwartet [Batch, C, H, W]
+                                unit_pos = torch.tensor([[j, i]], dtype=torch.float32, device=device)  # Form: [1, 2]
+
+                                # Netz aufrufen
+                                q_vals_v = net(state_v_single, unit_pos=unit_pos)[0]  # jetzt Shape: [89]
+
+                                # Maskierung anwenden
+                                masked_q_vals = q_vals_v.masked_fill(~cell_mask, -1e9)
+
+                                # Beste gültige Aktion auswählen
+                                q_val = torch.argmax(masked_q_vals).item()
+
+                                # Umwandlung in Aktionsarray
+                                full_action[env_i, i, j] = self.qval_to_action(q_val)
+                            # Win, Ressource, ProduceWorker, Produce Building, Attack, ProduceCombat Unit
 
 
-                        else:
+                            reward = 0.0
 
-                            # Eingabe vorbereiten für genau eine Unit:
-                            state_v_single = state_v[env_i:env_i + 1]  # Form: [1, C, H, W]
-                            unit_pos = torch.tensor([[j, i]], dtype=torch.float32, device=device)  # Form: [1, 2]
-
-                            # Netz aufrufen
-                            q_vals_v = net(state_v_single, unit_pos=unit_pos)[0]  # jetzt Shape: [89]
-
-                            # Maskierung anwenden
-                            masked_q_vals = q_vals_v.masked_fill(~cell_mask, -1e9)
-
-                            # Beste gültige Aktion auswählen
-                            q_val = torch.argmax(masked_q_vals).item()
-
-                            # Umwandlung in Aktionsarray
-                            full_action[env_i, i, j] = self.qval_to_action(q_val)
-                        # Win, Ressource, ProduceWorker, Produce Building, Attack, ProduceCombat Unit
-                        reward = 0.0
-                        if full_action[env_i, i, j, 0] == 3:
-                            reward = reward_weights[1]  # Return
-                        elif full_action[env_i, i, j, 0] == 4 and full_action[env_i, i, j, 5] == 3:
-                            reward = reward_weights[2]  # Produce Worker
-                        elif full_action[env_i, i, j, 0] == 4 and full_action[env_i, i, j, 5] in [1, 2]:
-                            reward = reward_weights[3]  # Produce Building
-                        elif full_action[env_i, i, j, 0] == 5:
-                            reward = reward_weights[4]  # Attack
-                        elif full_action[env_i, i, j, 0] == 4 and full_action[env_i, i, j, 5] in [4, 5, 6]:
-                            reward = reward_weights[5]  # Produce Combat Unit
+                            if full_action[env_i, i, j, 0] == 3:
+                                reward = self.reward_weights[1]  # Return
+                            elif full_action[env_i, i, j, 0]==2:
+                                reward = 0.5*self.reward_weights[1] #harvest
+                            elif full_action[env_i, i, j, 0] == 4 and full_action[env_i, i, j, 5] == 3:
+                                reward = self.reward_weights[2]  # Produce Worker
+                            elif full_action[env_i, i, j, 0] == 4 and full_action[env_i, i, j, 5] in [1, 2]:
+                                reward = self.reward_weights[3]  # Produce Building
+                            elif full_action[env_i, i, j, 0] == 5:
+                                reward = self.reward_weights[4]  # Attack
+                            elif full_action[env_i, i, j, 0] == 4 and full_action[env_i, i, j, 5] in [4, 5, 6]:
+                                reward = self.reward_weights[5]  # Produce Combat Unit
 
 
-                        unit_reward_map[(env_i, i, j)] = reward
+                            unit_reward_map[(env_i, i, j)] = reward
+
         # --- Schritt ausführen ---
         prev_state = self.state.copy()
-        new_state, _, is_done, infos = self.env.step(full_action.reshape(1, -1))
+        new_state, _, is_done, infos = self.env.step(full_action.reshape(self.env.num_envs, -1))
 
         #envs.venv.venv.render(mode="human")
         next_raw_masks = self.env.venv.venv.get_action_mask()
@@ -475,30 +494,28 @@ class Agent:
         for env_i in range(num_envs):
             # Win-Loose Reward
             if is_done[env_i]:
-                win_loss_reward = reward_weights[0] * infos[env_i]["microrts_stats"].get("WinLossRewardFunction", 0.0)
+                win_loss_reward = self.reward_weights[0] * infos[env_i]["microrts_stats"].get("WinLossRewardFunction", 0.0)
                 for i in range(h):
                     for j in range(w):
                         if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
-                            unit_reward_map[(env_i, i, j)] += win_loss_reward
-            for i in range(h):
-                for j in range(w):
-                    if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
-                        flat_idx = i * h + j
-                        action_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat_idx])
-                        next_action_mask = self.convert_78_to_89_mask(next_raw_masks[env_i, flat_idx])
-                        single_action = np.array(full_action[env_i, i, j], dtype=np.int64)
-                        single_action = self.action_to_qval(single_action)
+                            flat_idx = i * w + j
+                            action_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat_idx])
+                            if action_mask.any():
+                                unit_reward_map[(env_i, i, j)] += win_loss_reward
+                                next_action_mask = self.convert_78_to_89_mask(next_raw_masks[env_i, flat_idx])
+                                single_action = np.array(full_action[env_i, i, j], dtype=np.int64)
+                                single_action = self.action_to_qval(single_action)
 
-                        self.exp_buffer.append(
-                            prev_state[env_i],
-                            single_action,
-                            unit_reward_map.get((env_i, i, j), 0.0),
-                            is_done[env_i],
-                            new_state[env_i],
-                            (j, i),
-                            action_mask,
-                            next_action_mask
-                        )
+                                self.exp_buffer.append(
+                                    prev_state[env_i],
+                                    single_action,
+                                    unit_reward_map.get((env_i, i, j), 0.0),
+                                    is_done[env_i],
+                                    new_state[env_i],
+                                    (j, i),
+                                    action_mask,
+                                    next_action_mask
+                                )
 
         # --- Episodenabschluss ---
         self.state = new_state
@@ -670,17 +687,20 @@ if __name__ == "__main__":
     reward_weights = np.array([50.0, 3.0, 3.0, 0.0, 5.0, 1.0])
     print("Reward Weights:", reward_weights)
     num_envs = args.num_bot_envs
-    num_each = num_envs // 2  # ganzzahliger Anteil
+    num_each = num_envs // 4  # gleichmäßige Verteilung auf 4 AIs
     envs = MicroRTSGridModeVecEnv(
         num_selfplay_envs=args.num_selfplay_envs,
         num_bot_envs=args.num_bot_envs,
         partial_obs=args.partial_obs,
         max_steps=args.max_steps,
         render_theme=2,
-        ai2s=  (
-    [microrts_ai.passiveAI for _ in range(num_each)] +
-    [microrts_ai.workerRushAI for _ in range(num_envs - num_each)]
-),
+        ai2s=(
+                [microrts_ai.passiveAI for _ in range(num_each)] +
+                [microrts_ai.workerRushAI for _ in range(num_each)] +
+                [microrts_ai.lightRushAI for _ in range(num_each)] +
+                [microrts_ai.coacAI for _ in range(num_envs - 3 * num_each)]
+
+        ),
 
         map_paths=[args.train_maps[0]],
         reward_weight=reward_weights,
@@ -719,7 +739,7 @@ if __name__ == "__main__":
     optimizer = torch.optim.Adam(policy_net.parameters(), lr=args.learning_rate)
 
     # Agent vorbereiten
-    agent = Agent(env=envs, exp_buffer=expbuffer, net=policy_net, device=device)
+    agent = Agent(env=envs, exp_buffer=expbuffer, net=policy_net, device=device, reward_weights=reward_weights)
 
     # Parameterzähler
     total_params = sum(p.numel() for p in policy_net.parameters() if p.requires_grad)
