@@ -816,7 +816,7 @@ if __name__ == "__main__":
             target_net.load_state_dict(policy_net.state_dict())
         # Checkpoint speichern
         if frame_idx % args.save_network == 0:
-            torch.save(policy_net.state_dict(), f"checkpoints/{args.exp_name}_{frame_idx}.pth")
+            torch.save(policy_net.state_dict(), f"{args.exp_nae}/model/{args.exp_name}_{frame_idx}.pth")
         # Training
         batch = expbuffer.sample(args.batch_size)
         optimizer.zero_grad()
