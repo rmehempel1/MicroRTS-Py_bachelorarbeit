@@ -916,10 +916,20 @@ class Agent:
             unit_pos_next_v = unit_pos  # fallback: gleiche Position wie vorher
 
         # ---- Q(s,·) und Q(s′,·) ----
-        qvals = self.net(states_v, unit_pos=unit_pos)  # [B, 89]
+        # ---- Q(s,·) und Q(s′,·) ----
+        qvals_out = self.net(states_v, unit_pos=unit_pos)
+        if isinstance(qvals_out, tuple):
+            qvals = qvals_out[0]  # nur Q-Werte
+        else:
+            qvals = qvals_out
 
         with torch.no_grad():
-            qvals_next = tgt_net(next_states_v, unit_pos=unit_pos_next_v)  # [B, 89]
+            qvals_next_out = tgt_net(next_states_v, unit_pos=unit_pos_next_v)
+            if isinstance(qvals_next_out, tuple):
+                qvals_next = qvals_next_out[0]
+            else:
+                qvals_next = qvals_next_out
+
 
         # ---- Q(s,a) extrahieren ----
         state_action_qvals = qvals[torch.arange(B, device=device), actions_v]  # [B]
