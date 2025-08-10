@@ -168,17 +168,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class UASDRQN(nn.Module):
-    def __init__(self, in_channels, h, w, hidden_size=256, gru_layers=1, pos_dim=32, q_dim=89):
+    def __init__(self, input_shape, hidden_size=256, gru_layers=1, pos_dim=32, q_dim=89):
         super().__init__()
-        self.input_height = h
-        self.input_width  = w
+        self.in_channels, h ,w = input_shape
         self.hidden_size  = hidden_size
         self.gru_layers   = gru_layers
         self.q_dim        = q_dim
 
         # --- Encoder (beliebig; Beispiel) ---
         self.encoder = nn.Sequential(
-            nn.Conv2d(in_channels, 32, 3, padding=1), nn.ReLU(),
+            nn.Conv2d(self.in_channels, 32, 3, padding=1), nn.ReLU(),
             nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(),
             nn.MaxPool2d(2),
             nn.Conv2d(64, 64, 3, padding=1), nn.ReLU(),
@@ -186,7 +185,7 @@ class UASDRQN(nn.Module):
         )
         # berechne Feature-Länge F_out
         with torch.no_grad():
-            dummy = torch.zeros(1, in_channels, h, w)
+            dummy = torch.zeros(1, self.in_channels, h, w)
             f = self.encoder(dummy).numel()
         self.feat_lin = nn.Linear(f, hidden_size)  # in GRU-Eingabe projizieren
 
