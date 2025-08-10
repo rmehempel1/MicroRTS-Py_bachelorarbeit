@@ -894,40 +894,38 @@ class Agent:
                 out.append(torch.as_tensor(m, device=device, dtype=torch.bool))
         return torch.stack(out, dim=0)  # [B, A]
 
-
     def calc_loss(self, batch, tgt_net, gamma: float):
         (states, actions, rewards, dones, next_states,
          unit_positions, action_masks, next_action_masks,
-         hidden_t, hidden_tp1) = batch
+         hidden_t, hidden_tp1, unit_pos_next) = batch
         device = self.device
         B = len(actions)
 
         # ---- Tensor-Prep ----
-        states_v = torch.as_tensor(states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
+        states_v = torch.as_tensor(states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)  # [B,C,H,W]
         next_states_v = torch.as_tensor(next_states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
-        actions_v = torch.as_tensor(actions, dtype=torch.int64, device=device)
-        rewards_v = torch.as_tensor(rewards, dtype=torch.float32, device=device)
-        done_mask = torch.as_tensor(dones, dtype=torch.bool, device=device)
-        unit_pos = torch.as_tensor(unit_positions, dtype=torch.long, device=device)
+        actions_v = torch.as_tensor(actions, dtype=torch.int64, device=device)  # [B]
+        rewards_v = torch.as_tensor(rewards, dtype=torch.float32, device=device)  # [B]
+        done_mask = torch.as_tensor(dones, dtype=torch.bool, device=device)  # [B]
+        unit_pos = torch.as_tensor(unit_positions, dtype=torch.long, device=device)  # [B,2]
 
-        # Hidden-States
-        if isinstance(hidden_t, tuple):
-            hidden_t = (hidden_t[0].to(device), hidden_t[1].to(device))
-            hidden_tp1 = (hidden_tp1[0].to(device), hidden_tp1[1].to(device))
+        # Falls unit_pos_next existiert und nicht None → umwandeln
+        if unit_pos_next is not None:
+            unit_pos_next_v = torch.as_tensor(unit_pos_next, dtype=torch.long, device=device)
         else:
-            hidden_t = hidden_t.to(device)
-            hidden_tp1 = hidden_tp1.to(device)
+            unit_pos_next_v = unit_pos  # fallback: gleiche Position wie vorher
 
-        # ---- Q(s,·) und Q(s′,·) mit Hidden-State ----
-        qvals, _ = self.net(states_v, unit_pos=unit_pos, h0=hidden_t)
+        # ---- Q(s,·) und Q(s′,·) ----
+        qvals = self.net(states_v, unit_pos=unit_pos)  # [B, 89]
+
         with torch.no_grad():
-            qvals_next, _ = tgt_net(next_states_v, unit_pos=unit_pos, h0=hidden_tp1)
+            qvals_next = tgt_net(next_states_v, unit_pos=unit_pos_next_v)  # [B, 89]
 
         # ---- Q(s,a) extrahieren ----
-        state_action_qvals = qvals[torch.arange(B, device=device), actions_v]
+        state_action_qvals = qvals[torch.arange(B, device=device), actions_v]  # [B]
 
         # ---- max_a Q(s′,a) mit Maskierung ----
-        next_mask = self._stack_bool_mask(next_action_masks, device)
+        next_mask = self._stack_bool_mask(next_action_masks, device)  # [B,89] oder None
         if next_mask is not None:
             masked_next = qvals_next.masked_fill(~next_mask, -1e9)
             max_next_q, _ = masked_next.max(dim=1)
@@ -948,7 +946,6 @@ class Agent:
         # ---- Loss ----
         loss = F.smooth_l1_loss(state_action_qvals, target_qvals)
         return loss
-
 
 
 def log_episode_to_csv(
