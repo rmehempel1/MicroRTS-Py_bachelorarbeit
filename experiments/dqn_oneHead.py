@@ -398,7 +398,7 @@ class Agent:
             for i in range(h):
                 for j in range(w):
                     if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
-                        flat_idx = i * h + j                                                                            # wird hierndie richtige Zelle ausgewählt, stimmt der Flat:index?
+                        flat_idx = i * w + j                                                                            # wird hierndie richtige Zelle ausgewählt, stimmt der Flat:index?
                         cell_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat_idx])
                         # --- Aktionsauswahl ---
                         if np.random.random() < epsilon:
@@ -442,7 +442,7 @@ class Agent:
 
         # --- Schritt ausführen ---
         prev_state = self.state.copy()
-        new_state, reward, is_done, infos = self.env.step(full_action.reshape(1, -1))
+        new_state, reward, is_done, infos = self.env.step(full_action.reshape(self.env.num_envs, -1))
         #envs.venv.venv.render(mode="human")
         next_raw_masks = self.env.venv.venv.get_action_mask()
 
@@ -494,10 +494,6 @@ class Agent:
                     episode_info[k] = raw_stats.get(f"{k}RewardFunction", 0.0)
 
                 episode_results.append(episode_info)
-
-
-
-
                 self.env_episode_counter[env_i] += 1
                 self.total_rewards[env_i] = 0.0
                 self.episode_steps[env_i] = 0
@@ -638,18 +634,17 @@ if __name__ == "__main__":
     reward_weights = np.array([50.0, 3.0, 3.0, 0.0, 5.0, 1.0])
     print("Reward Weights:", reward_weights)
     num_envs = args.num_bot_envs
-    num_each = num_envs // 2  # ganzzahliger Anteil
+    num_each = num_envs // 4  # ganzzahliger Anteil
     envs = MicroRTSGridModeVecEnv(
         num_selfplay_envs=args.num_selfplay_envs,
         num_bot_envs=args.num_bot_envs,
         partial_obs=args.partial_obs,
         max_steps=args.max_steps,
         render_theme=2,
-        ai2s=  (
-    [microrts_ai.passiveAI for _ in range(num_each)] +
-    [microrts_ai.workerRushAI for _ in range(num_envs - num_each)]
-),
-
+        ai2s= ( [microrts_ai.passiveAI for _ in range(num_each)] +
+                [microrts_ai.workerRushAI for _ in range(num_each)] +
+                [microrts_ai.lightRushAI for _ in range(num_each)] +
+                [microrts_ai.coacAI for _ in range(num_envs - 3 * num_each)]) ,
         map_paths=[args.train_maps[0]],
         reward_weight=reward_weights,
         # Win, Ressource, ProduceWorker, Produce Building, Attack, ProduceCombat Unit, (auskommentiert closer to enemy base)
@@ -725,13 +720,6 @@ if __name__ == "__main__":
     # Netzwerke initialisieren
     target_net.load_state_dict(policy_net.state_dict())  #  Initiales Sync
     target_net.eval()
-
-    optimizer = torch.optim.Adam(policy_net.parameters(), lr=args.learning_rate)
-
-    # Agent vorbereiten
-    agent = Agent(env=envs, exp_buffer=expbuffer, net=policy_net, device=device)
-
-    print(f"Total trainierbare Parameter: {sum(p.numel() for p in policy_net.parameters() if p.requires_grad)}")
     torch.save(policy_net.state_dict(), f"./{args.exp_name}/{args.exp_name}_initial.pth")
     # Training
     while frame_idx < args.total_timesteps:
@@ -741,14 +729,22 @@ if __name__ == "__main__":
         epsilon = max(args.epsilon_final, args.epsilon_start - frame_idx / args.epsilon_decay)
         if frame_idx < warmup_frames:
             epsilon = 1.0
-
+        log_path = f"./{args.exp_name}/{args.exp_name}_train_log.csv"
+        file_exists = os.path.exists(log_path)
         step_info = agent.play_step(epsilon=epsilon)
         for ep_data in step_info.get("episode_stats", []):
-            with open(f"./{args.exp_name}/{args.exp_name}_train_log.csv", "a") as f:
-                if f.tell() == 0:
-                    header = list(ep_data.keys())
+            with open(log_path, "a") as f:
+                # Frame-Index hinzufügen
+                ep_data_with_frame = dict(ep_data)
+                ep_data_with_frame["frame_idx"] = frame_idx  #ergänzt zu den epsisoden infos noch den aktuellen Frame_idx
+
+                if not file_exists or os.stat(log_path).st_size == 0:
+                    header = list(ep_data_with_frame.keys())
                     f.write(",".join(header) + "\n")
-                values = [str(ep_data[k]) for k in header]
+                else:
+                    header = list(ep_data_with_frame.keys())  # trotzdem notwendig
+
+                values = [str(ep_data_with_frame[k]) for k in header]
                 f.write(",".join(values) + "\n")
 
         if len(expbuffer) < args.batch_size:
@@ -758,7 +754,9 @@ if __name__ == "__main__":
             target_net.load_state_dict(policy_net.state_dict())
         # Checkpoint speichern
         if frame_idx % args.save_network == 0:
-            torch.save(policy_net.state_dict(), f"checkpoints/{args.exp_name}_{frame_idx}.pth")
+            save_path = os.path.join(model_dir, f"{args.exp_name}_{frame_idx}.pth")
+            torch.save(policy_net.state_dict(), save_path)
+            print(f"Checkpoint gespeichert: {save_path}")
         # Training
         batch = expbuffer.sample(args.batch_size)
         optimizer.zero_grad()
