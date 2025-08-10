@@ -581,6 +581,42 @@ class Agent:
         self.state = self.env.reset()
         self.total_reward = 0.0
 
+    def _init_hidden(self, batch_size: int, device):
+        """
+        Erstellt einen Null-Hidden-State passend zu deinem Netz.
+        Unterstützt GRU/LSTM. Greift bevorzugt auf net.rnn.* zu.
+        Fällt sonst auf (num_layers=1, hidden_size=256) zurück – passe das ggf. an.
+        """
+        net = self.net
+        # Versuche, Parameter vom eingebauten RNN zu lesen
+        rnn = getattr(net, "rnn", None)
+        num_layers = getattr(net, "num_layers", None)
+        hidden_size = getattr(net, "hidden_size", None)
+
+        if rnn is not None:
+            num_layers = getattr(rnn, "num_layers", num_layers)
+            hidden_size = getattr(rnn, "hidden_size", hidden_size)
+            is_lstm = isinstance(rnn, nn.LSTM)
+        else:
+            # Heuristik/Fallback
+            is_lstm = bool(getattr(net, "is_lstm", False))
+
+        if num_layers is None or hidden_size is None:
+            # <<< WICHTIG: Falls du die echten Werte kennst, trage sie hier ein!
+            num_layers = 1
+            hidden_size = 256
+
+        # Bidirectional? (falls ja, *2 auf die erste Dimension)
+        num_directions = 2 if (rnn is not None and getattr(rnn, "bidirectional", False)) else 1
+        layers = num_layers * num_directions
+
+        h0 = torch.zeros(layers, batch_size, hidden_size, device=device)
+        if is_lstm:
+            c0 = torch.zeros_like(h0)
+            return (h0, c0)
+        else:
+            return h0
+
     def qval_to_action(self, q_val: int) -> np.ndarray:
         """
         Wandelt einen diskreten Q-Wert (0–88) in ein Aktionsarray mit 7 Feldern um.
@@ -707,7 +743,8 @@ class Agent:
             with torch.no_grad():
                 # Eine saubere Möglichkeit: das Netz nach einem leeren State fragen,
                 # ansonsten selbst all-zeros mit den richtigen Dimensionen anlegen.
-                self.rnn_state = net.initial_state(batch_size=num_envs, device=device)
+                if not hasattr(self, "rnn_state") or self.rnn_state is None:
+                    self.rnn_state = self._init_hidden(batch_size=num_envs, device=device)
                 # Fallback: falls dein Netz keine initial_state-Methode hat:
                 # hidden_size = getattr(net, "hidden_size", 256)
                 # num_layers = getattr(net, "num_layers", 1)
