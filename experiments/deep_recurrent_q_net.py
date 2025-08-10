@@ -170,7 +170,7 @@ import torch.nn.functional as F
 class UASDRQN(nn.Module):
     def __init__(self, input_shape, hidden_size=256, gru_layers=1, pos_dim=32, q_dim=89):
         super().__init__()
-        self.in_channels, h ,w = input_shape
+        self.in_channels, self.h ,self.w = input_shape
         self.hidden_size  = hidden_size
         self.gru_layers   = gru_layers
         self.q_dim        = q_dim
@@ -185,7 +185,7 @@ class UASDRQN(nn.Module):
         )
         # berechne Feature-Länge F_out
         with torch.no_grad():
-            dummy = torch.zeros(1, self.in_channels, h, w)
+            dummy = torch.zeros(1, self.in_channels, self.h, self.w)
             f = self.encoder(dummy).numel()
         self.feat_lin = nn.Linear(f, hidden_size)  # in GRU-Eingabe projizieren
 
@@ -205,8 +205,8 @@ class UASDRQN(nn.Module):
     # Hilfslayer: normiere Gitterkoordinaten
     def _norm_pos(self, pos_xy, device):
         # pos_xy: [..., 2] in (x=j, y=i)
-        x = pos_xy[..., 0] / max(1, (self.input_width  - 1))
-        y = pos_xy[..., 1] / max(1, (self.input_height - 1))
+        x = pos_xy[..., 0] / max(1, (self.w  - 1))
+        y = pos_xy[..., 1] / max(1, (self.h - 1))
         return torch.stack([x, y], dim=-1).to(device).float()
 
     @torch.no_grad()
@@ -1060,6 +1060,7 @@ if __name__ == "__main__":
         log_path = f"./{args.exp_name}/{args.exp_name}_train_log.csv"
         file_exists = os.path.exists(log_path)
         step_info = agent.play_step(epsilon=epsilon)
+        """
         for ep_data in step_info.get("episode_stats", []):
             with open(log_path, "a") as f:
                 # Frame-Index hinzufügen
@@ -1074,7 +1075,7 @@ if __name__ == "__main__":
 
                 values = [str(ep_data_with_frame[k]) for k in header]
                 f.write(",".join(values) + "\n")
-
+        """
         if len(expbuffer) < args.batch_size:
             continue
         # Target-Sync
