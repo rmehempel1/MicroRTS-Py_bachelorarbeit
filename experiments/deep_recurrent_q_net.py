@@ -701,14 +701,12 @@ class Agent:
         _, h, w, _ = self.state.shape
         num_envs = self.env.num_envs
 
-        # --- Hidden-State initialisieren (GRU/LSTM) ---
+        # --- Hidden-State initialisieren ---
         if not hasattr(self, "rnn_state") or self.rnn_state is None:
             self.rnn_state = self._init_hidden(batch_size=num_envs, device=device)
 
-        # Aktionen-Array für alle Units in allen Envs
+        # Aktionen-Array
         full_action = np.zeros((num_envs, h, w, 7), dtype=np.int32)
-
-        # Liste für nächste RNN-States
         next_rnn_state_list = [None] * num_envs
 
         @torch.no_grad()
@@ -731,14 +729,14 @@ class Agent:
                 else:
                     rnn_in = self.rnn_state[:, env_i:env_i + 1, :].contiguous()
 
-                # Einzelnes Environment als 5D-Tensor [1,1,C,H,W]
+                # State als [1,1,C,H,W]
                 state_v_single_5d = torch.tensor(
                     self.state[env_i].transpose(2, 0, 1),
                     dtype=torch.float32,
                     device=device
                 ).unsqueeze(0).unsqueeze(1)
 
-                # 1) einmaliger RNN-Schritt für Kontext
+                # 1) einmaliger RNN-Schritt -> Kontext
                 ctx, h_next = net.context(state_v_single_5d, h0=rnn_in)
                 next_rnn_state_list[env_i] = h_next
 
@@ -752,11 +750,11 @@ class Agent:
                 if len(pos_list) == 0:
                     continue
 
-                pos_bt = torch.tensor(pos_list, dtype=torch.float32, device=device).unsqueeze(1)  # [N,1,2]
-                ctx_bt = ctx.repeat(len(pos_list), 1, 1)  # [N,1,H]
+                pos_bt = torch.tensor(pos_list, dtype=torch.float32, device=device).unsqueeze(1)
+                ctx_bt = ctx.repeat(len(pos_list), 1, 1)
 
-                # 3) Q-Werte für alle Units
-                q_all = net.q_from_context(ctx_bt, pos_bt)[:, 0, :]  # [N,89]
+                # 3) Q-Werte
+                q_all = net.q_from_context(ctx_bt, pos_bt)[:, 0, :]
 
                 # 4) Maskieren + Aktion auswählen
                 for k, (i, j) in enumerate(idx_list):
@@ -784,36 +782,106 @@ class Agent:
 
                     full_action[env_i, i, j] = self.qval_to_action(single_action)
 
-            # --- RNN-Weiterführung t->t+1 ---
+        # --- Schritt ausführen ---
+        prev_state = self.state.copy()
+        new_state, reward, is_done, infos = self.env.step(
+            full_action.reshape(self.env.num_envs, -1)
+        )
+        next_raw_masks = self.env.venv.venv.get_action_mask()
+
+        # --- Replay Buffer befüllen ---
+        for env_i in range(num_envs):
+            if isinstance(self.rnn_state, tuple):
+                hidden_t = (self.rnn_state[0][:, env_i:env_i + 1, :].detach().cpu(),
+                            self.rnn_state[1][:, env_i:env_i + 1, :].detach().cpu())
+                hidden_tp1 = (next_rnn_state_list[env_i][0].detach().cpu(),
+                              next_rnn_state_list[env_i][1].detach().cpu())
+            else:
+                hidden_t = self.rnn_state[:, env_i:env_i + 1, :].detach().cpu()
+                hidden_tp1 = next_rnn_state_list[env_i].detach().cpu()
+
+            for i in range(h):
+                for j in range(w):
+                    if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
+                        flat_idx = i * w + j
+                        action_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat_idx])
+                        next_action_mask = self.convert_78_to_89_mask(next_raw_masks[env_i, flat_idx])
+                        single_action = np.array(full_action[env_i, i, j], dtype=np.int64)
+                        single_action = self.action_to_qval(single_action)
+
+                        self.exp_buffer.append(
+                            prev_state[env_i],
+                            single_action,
+                            reward[env_i],
+                            is_done[env_i],
+                            new_state[env_i],
+                            (j, i),
+                            action_mask,
+                            next_action_mask,
+                            hidden_t,
+                            hidden_tp1
+                        )
+
+        # --- Hidden-State übernehmen ---
+        def detach_hidden(h):
+            if isinstance(h, tuple):
+                return (h[0].detach(), h[1].detach())
+            return h.detach()
+
+        if isinstance(self.rnn_state, tuple):
+            h_list, c_list = [], []
             for env_i in range(num_envs):
-                if isinstance(self.rnn_state, tuple):
-                    rnn_in = (
-                        self.rnn_state[0][:, env_i:env_i + 1, :].contiguous(),
-                        self.rnn_state[1][:, env_i:env_i + 1, :].contiguous()
-                    )
-                else:
-                    rnn_in = self.rnn_state[:, env_i:env_i + 1, :].contiguous()
+                h_i, c_i = next_rnn_state_list[env_i]
+                if is_done[env_i]:
+                    h_i = torch.zeros_like(h_i)
+                    c_i = torch.zeros_like(c_i)
+                h_list.append(h_i)
+                c_list.append(c_i)
+            self.rnn_state = (torch.cat(h_list, dim=1), torch.cat(c_list, dim=1))
+            self.rnn_state = (detach_hidden(self.rnn_state[0]), detach_hidden(self.rnn_state[1]))
+        else:
+            h_list = []
+            for env_i in range(num_envs):
+                h_i = next_rnn_state_list[env_i]
+                if is_done[env_i]:
+                    h_i = torch.zeros_like(h_i)
+                h_list.append(h_i)
+            self.rnn_state = torch.cat(h_list, dim=1)
+            self.rnn_state = detach_hidden(self.rnn_state)
 
-                ys, xs = [], []
-                for ii in range(h):
-                    for jj in range(w):
-                        if self.state[env_i, ii, jj, 11] == 1 and self.state[env_i, ii, jj, 21] == 1:
-                            ys.append(ii)
-                            xs.append(jj)
-                if len(xs) == 0:
-                    cen = torch.tensor([[[0.0, 0.0]]], device=device)
-                else:
-                    cen = torch.tensor([[[float(np.mean(xs)), float(np.mean(ys))]]], device=device)
+        # --- Episodenabschluss / Logging ---
+        self.state = new_state
+        for env_i in range(num_envs):
+            self.total_rewards[env_i] += reward[env_i]
+            self.episode_steps[env_i] += 1
 
-                # wieder den gleichen state_5d nutzen
-                state_v_single_5d = torch.tensor(
-                    self.state[env_i].transpose(2, 0, 1),
-                    dtype=torch.float32,
-                    device=device
-                ).unsqueeze(0).unsqueeze(1)
+        for env_i in range(num_envs):
+            if is_done[env_i]:
+                ep = self.env_episode_counter[env_i]
+                shaped = self.total_rewards[env_i]
+                steps = self.episode_steps[env_i]
+                raw_stats = infos[env_i].get("microrts_stats", {})
 
-                _, h_next = net(state_v_single_5d, unit_pos=cen, h0=rnn_in)
-                next_rnn_state_list[env_i] = h_next
+                episode_info = {
+                    "env": env_i,
+                    "episode": ep,
+                    "reward": shaped,
+                    "steps": steps,
+                    "epsilon": epsilon
+                }
+                for k in ["WinLoss", "ResourceGather", "ProduceWorker", "ProduceBuilding", "Attack",
+                          "ProduceCombatUnit"]:
+                    episode_info[k] = raw_stats.get(f"{k}RewardFunction", 0.0)
+
+                episode_results.append(episode_info)
+                self.env_episode_counter[env_i] += 1
+                self.total_rewards[env_i] = 0.0
+                self.episode_steps[env_i] = 0
+
+        return {
+            "done": any(is_done),
+            "episode_stats": episode_results
+        }
 
     def _stack_bool_mask(mask_list, device):
         if mask_list is None:
@@ -1060,7 +1128,7 @@ if __name__ == "__main__":
         log_path = f"./{args.exp_name}/{args.exp_name}_train_log.csv"
         file_exists = os.path.exists(log_path)
         step_info = agent.play_step(epsilon=epsilon)
-        """
+
         for ep_data in step_info.get("episode_stats", []):
             with open(log_path, "a") as f:
                 # Frame-Index hinzufügen
@@ -1075,7 +1143,7 @@ if __name__ == "__main__":
 
                 values = [str(ep_data_with_frame[k]) for k in header]
                 f.write(",".join(values) + "\n")
-        """
+
         if len(expbuffer) < args.batch_size:
             continue
         # Target-Sync
