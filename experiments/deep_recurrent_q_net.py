@@ -896,40 +896,48 @@ class Agent:
 
 
     def calc_loss(self, batch, tgt_net, gamma: float):
-        states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks = batch
+        (states, actions, rewards, dones, next_states,
+         unit_positions, action_masks, next_action_masks,
+         hidden_t, hidden_tp1) = batch
         device = self.device
         B = len(actions)
 
         # ---- Tensor-Prep ----
-        states_v = torch.as_tensor(states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)  # [B,C,H,W]
+        states_v = torch.as_tensor(states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
         next_states_v = torch.as_tensor(next_states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
-        actions_v = torch.as_tensor(actions, dtype=torch.int64, device=device)  # [B]
-        rewards_v = torch.as_tensor(rewards, dtype=torch.float32, device=device)  # [B]
-        done_mask = torch.as_tensor(dones, dtype=torch.bool, device=device)  # [B]
-        unit_pos = torch.as_tensor(unit_positions, dtype=torch.long, device=device)  # [B,2]
+        actions_v = torch.as_tensor(actions, dtype=torch.int64, device=device)
+        rewards_v = torch.as_tensor(rewards, dtype=torch.float32, device=device)
+        done_mask = torch.as_tensor(dones, dtype=torch.bool, device=device)
+        unit_pos = torch.as_tensor(unit_positions, dtype=torch.long, device=device)
 
-        # ---- Q(s,·) und Q(s′,·) ----
-        qvals = self.net(states_v, unit_pos=unit_pos)  # [B, 89]
+        # Hidden-States
+        if isinstance(hidden_t, tuple):
+            hidden_t = (hidden_t[0].to(device), hidden_t[1].to(device))
+            hidden_tp1 = (hidden_tp1[0].to(device), hidden_tp1[1].to(device))
+        else:
+            hidden_t = hidden_t.to(device)
+            hidden_tp1 = hidden_tp1.to(device)
+
+        # ---- Q(s,·) und Q(s′,·) mit Hidden-State ----
+        qvals, _ = self.net(states_v, unit_pos=unit_pos, h0=hidden_t)
         with torch.no_grad():
-            qvals_next = tgt_net(next_states_v, unit_pos=unit_pos)  # [B, 89]  (falls du next_pos hast: hier einsetzen)
+            qvals_next, _ = tgt_net(next_states_v, unit_pos=unit_pos, h0=hidden_tp1)
 
         # ---- Q(s,a) extrahieren ----
-        state_action_qvals = qvals[torch.arange(B, device=device), actions_v]  # [B]
+        state_action_qvals = qvals[torch.arange(B, device=device), actions_v]
 
         # ---- max_a Q(s′,a) mit Maskierung ----
-        next_mask = self._stack_bool_mask(next_action_masks, device)  # [B,89] oder None
+        next_mask = self._stack_bool_mask(next_action_masks, device)
         if next_mask is not None:
             masked_next = qvals_next.masked_fill(~next_mask, -1e9)
-            max_next_q, _ = masked_next.max(dim=1)  # [B]
-            # Edge case: falls in einer Zeile gar kein True: setze 0
+            max_next_q, _ = masked_next.max(dim=1)
             any_valid = next_mask.any(dim=1)
             max_next_q = torch.where(any_valid, max_next_q, torch.zeros_like(max_next_q))
         else:
             max_next_q, _ = qvals_next.max(dim=1)
 
-        # ---- Targets je nach Return-Typ ----
+        # ---- Targets ----
         if getattr(self, "use_lambda", False):
-            # rewards_v == G^λ_t (bereits mit Bootstrap gemischt) -> kein weiteres Bootstrap!
             target_qvals = rewards_v
         else:
             n = int(getattr(self, "n_step", 1))
@@ -937,9 +945,10 @@ class Agent:
             bootstrap = (~done_mask).float() * gamma_pow * max_next_q
             target_qvals = rewards_v + bootstrap
 
-        # ---- Huber-Loss ----
+        # ---- Loss ----
         loss = F.smooth_l1_loss(state_action_qvals, target_qvals)
         return loss
+
 
 
 def log_episode_to_csv(
