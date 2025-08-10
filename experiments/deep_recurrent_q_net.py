@@ -727,51 +727,51 @@ class Agent:
         return torch.stack(out, dim=0)  # [B, A]
 
 
-def calc_loss(self, batch, tgt_net, gamma: float):
-    states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks = batch
-    device = self.device
-    B = len(actions)
+    def calc_loss(self, batch, tgt_net, gamma: float):
+        states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks = batch
+        device = self.device
+        B = len(actions)
 
-    # ---- Tensor-Prep ----
-    states_v = torch.as_tensor(states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)  # [B,C,H,W]
-    next_states_v = torch.as_tensor(next_states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
-    actions_v = torch.as_tensor(actions, dtype=torch.int64, device=device)  # [B]
-    rewards_v = torch.as_tensor(rewards, dtype=torch.float32, device=device)  # [B]
-    done_mask = torch.as_tensor(dones, dtype=torch.bool, device=device)  # [B]
-    unit_pos = torch.as_tensor(unit_positions, dtype=torch.long, device=device)  # [B,2]
+        # ---- Tensor-Prep ----
+        states_v = torch.as_tensor(states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)  # [B,C,H,W]
+        next_states_v = torch.as_tensor(next_states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
+        actions_v = torch.as_tensor(actions, dtype=torch.int64, device=device)  # [B]
+        rewards_v = torch.as_tensor(rewards, dtype=torch.float32, device=device)  # [B]
+        done_mask = torch.as_tensor(dones, dtype=torch.bool, device=device)  # [B]
+        unit_pos = torch.as_tensor(unit_positions, dtype=torch.long, device=device)  # [B,2]
 
-    # ---- Q(s,·) und Q(s′,·) ----
-    qvals = self.net(states_v, unit_pos=unit_pos)  # [B, 89]
-    with torch.no_grad():
-        qvals_next = tgt_net(next_states_v, unit_pos=unit_pos)  # [B, 89]  (falls du next_pos hast: hier einsetzen)
+        # ---- Q(s,·) und Q(s′,·) ----
+        qvals = self.net(states_v, unit_pos=unit_pos)  # [B, 89]
+        with torch.no_grad():
+            qvals_next = tgt_net(next_states_v, unit_pos=unit_pos)  # [B, 89]  (falls du next_pos hast: hier einsetzen)
 
-    # ---- Q(s,a) extrahieren ----
-    state_action_qvals = qvals[torch.arange(B, device=device), actions_v]  # [B]
+        # ---- Q(s,a) extrahieren ----
+        state_action_qvals = qvals[torch.arange(B, device=device), actions_v]  # [B]
 
-    # ---- max_a Q(s′,a) mit Maskierung ----
-    next_mask = self._stack_bool_mask(next_action_masks, device)  # [B,89] oder None
-    if next_mask is not None:
-        masked_next = qvals_next.masked_fill(~next_mask, -1e9)
-        max_next_q, _ = masked_next.max(dim=1)  # [B]
-        # Edge case: falls in einer Zeile gar kein True: setze 0
-        any_valid = next_mask.any(dim=1)
-        max_next_q = torch.where(any_valid, max_next_q, torch.zeros_like(max_next_q))
-    else:
-        max_next_q, _ = qvals_next.max(dim=1)
+        # ---- max_a Q(s′,a) mit Maskierung ----
+        next_mask = self._stack_bool_mask(next_action_masks, device)  # [B,89] oder None
+        if next_mask is not None:
+            masked_next = qvals_next.masked_fill(~next_mask, -1e9)
+            max_next_q, _ = masked_next.max(dim=1)  # [B]
+            # Edge case: falls in einer Zeile gar kein True: setze 0
+            any_valid = next_mask.any(dim=1)
+            max_next_q = torch.where(any_valid, max_next_q, torch.zeros_like(max_next_q))
+        else:
+            max_next_q, _ = qvals_next.max(dim=1)
 
-    # ---- Targets je nach Return-Typ ----
-    if getattr(self, "use_lambda", False):
-        # rewards_v == G^λ_t (bereits mit Bootstrap gemischt) -> kein weiteres Bootstrap!
-        target_qvals = rewards_v
-    else:
-        n = int(getattr(self, "n_step", 1))
-        gamma_pow = (gamma ** n) if n > 1 else gamma
-        bootstrap = (~done_mask).float() * gamma_pow * max_next_q
-        target_qvals = rewards_v + bootstrap
+        # ---- Targets je nach Return-Typ ----
+        if getattr(self, "use_lambda", False):
+            # rewards_v == G^λ_t (bereits mit Bootstrap gemischt) -> kein weiteres Bootstrap!
+            target_qvals = rewards_v
+        else:
+            n = int(getattr(self, "n_step", 1))
+            gamma_pow = (gamma ** n) if n > 1 else gamma
+            bootstrap = (~done_mask).float() * gamma_pow * max_next_q
+            target_qvals = rewards_v + bootstrap
 
-    # ---- Huber-Loss ----
-    loss = F.smooth_l1_loss(state_action_qvals, target_qvals)
-    return loss
+        # ---- Huber-Loss ----
+        loss = F.smooth_l1_loss(state_action_qvals, target_qvals)
+        return loss
 
 
 def log_episode_to_csv(
@@ -905,25 +905,15 @@ if __name__ == "__main__":
     dummy_obs = envs.reset()
     state_shape = dummy_obs.shape[1:]  # [H, W, C]
     action_shape = (7,)  # [H, W, 7] später
-
-    expbuffer = ReplayBuffer(capacity=args.buffer_memory, state_shape=state_shape, action_shape=action_shape)
-
+    expbuffer = ReplayBuffer(capacity=args.buffer_memory, state_shape=state_shape, action_shape=action_shape, n_step=5)
     dummy_input_shape = (29, 8, 8)  # [C, H, W]
     policy_net = UASDRQN(input_shape=dummy_input_shape).to(device)
     target_net = UASDRQN(input_shape=dummy_input_shape).to(device)
     target_net.load_state_dict(policy_net.state_dict())  #  Initiales Sync
     target_net.eval()
-
     optimizer = torch.optim.Adam(policy_net.parameters(), lr=args.learning_rate)
-
-    # Agent vorbereiten
     agent = Agent(env=envs, exp_buffer=expbuffer, net=policy_net, device=device)
 
-    # Parameterzähler
-    total_params = sum(p.numel() for p in policy_net.parameters() if p.requires_grad)
-    print(f"Gesamtanzahl der trainierbaren Parameter: {total_params}")
-
-    # Weitere Initialisierung
     frame_idx = 0
     episode_idx = 0
     best_mean_reward = None
@@ -932,7 +922,10 @@ if __name__ == "__main__":
     eval_interval = 100000
     frame_start = 0
 
-    # Ordner
+    # Parameterzähler
+    total_params = sum(p.numel() for p in policy_net.parameters() if p.requires_grad)
+    print(f"Gesamtanzahl der trainierbaren Parameter: {total_params}")
+
     model_dir = f"./{args.exp_name}/model/"
     os.makedirs(model_dir, exist_ok=True)
     csv_path = f"./csv/{args.exp_name}.csv"
