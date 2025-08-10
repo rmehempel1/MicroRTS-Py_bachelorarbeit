@@ -163,135 +163,104 @@ class MicroRTSStatsRecorder(VecEnvWrapper):
                 newinfos[i] = info
         return obs, rews, dones, newinfos
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
 class UASDRQN(nn.Module):
-    """
-    Deep Recurrent Q-Network für MicroRTS-ähnliche Zustände.
-
-    - CNN-Encoder extrahiert räumliche Features pro Zeitstufe
-    - GRU modelliert zeitliche Abhängigkeiten (rekurrente Schicht)
-    - Vollverbinder + Linear geben Q-Werte für 89 diskrete Aktionen aus
-
-    Erwartete Eingaben:
-    - x: [B, T, C, H, W] für Sequenzen oder [B, C, H, W] für Einzelschritte
-    - unit_pos: Optional Positions-Feature (x,y) normalisiert auf [0,1]
-        * für Sequenzen: [B, T, 2]
-        * für Einzelschritte: [B, 2]
-    - h0: optionaler initialer GRU-Hidden-State [1, B, hidden_size]
-
-    Rückgaben:
-    - q: Q-Werte
-        * Sequenz-Input: [B, T, n_actions]
-        * Einzelschritt: [B, n_actions]
-    - h_n: letzter Hidden-State der GRU [1, B, hidden_size]
-
-    Hinweise:
-    - Für step-by-step Interaktion (z.B. bei Evaluation) kann man pro Schritt
-      x in Form [B, C, H, W] übergeben und den h_n in den nächsten Schritt
-      einspeisen (online RNN).
-    - Für BPTT im Training über Sequenzen x als [B, T, C, H, W] übergeben.
-    """
-
-    def __init__(self, input_shape, hidden_size: int = 512, n_actions: int = 89):
+    def __init__(self, in_channels, h, w, hidden_size=256, gru_layers=1, pos_dim=32, q_dim=89):
         super().__init__()
-        c, h, w = input_shape
-
         self.input_height = h
-        self.input_width = w
-        self.hidden_size = hidden_size
-        self.n_actions = n_actions
+        self.input_width  = w
+        self.hidden_size  = hidden_size
+        self.gru_layers   = gru_layers
+        self.q_dim        = q_dim
 
-        # CNN-Encoder (leicht tiefer als Original für Stabilität)
+        # --- Encoder (beliebig; Beispiel) ---
         self.encoder = nn.Sequential(
-            nn.Conv2d(c, c * 2, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(c * 2, c * 4, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels, 32, 3, padding=1), nn.ReLU(),
+            nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, 64, 3, padding=1), nn.ReLU(),
+            nn.MaxPool2d(2),
         )
-
-        conv_out_size = self._get_conv_out((c, h, w))
-
-        # Feature-Projektion (+2 für Positionskanal)
-        self.feature = nn.Sequential(
-            nn.Linear(conv_out_size + 2, hidden_size),
-            nn.ReLU(inplace=True),
-        )
-
-        # Rekurrente Schicht
-        self.gru = nn.GRU(input_size=hidden_size, hidden_size=hidden_size, batch_first=True)
-
-        # Kopf für Q-Werte
-        self.head = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_size, n_actions),
-        )
-
-        self._init_weights()
-
-    def _init_weights(self):
-        # Kaiming für Linear/Conv, orthogonal für GRU
-        for m in self.modules():
-            if isinstance(m, (nn.Conv2d, nn.Linear)):
-                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')  # initiert mit kaiming
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-        for name, param in self.gru.named_parameters():
-            if 'weight_ih' in name:
-                nn.init.kaiming_uniform_(param)
-            elif 'weight_hh' in name:
-                nn.init.orthogonal_(param)
-            elif 'bias' in name:
-                nn.init.zeros_(param)
-
-    # ----------------------------
-    # Vorwärtsläufe
-    # ----------------------------
-    def forward(self,x,unit_pos = None,h0 = None):
-        """
-        Forward für Sequenz oder Einzelschritt.
-        """
-        is_sequence = (x.dim() == 5)  # [B,T,C,H,W]
-
-        B, T, C, H, W = x.shape
-
-        # CNN über jedes Zeitfenster
-        x = x.reshape(B * T, C, H, W)
-        feat_map = self.encoder(x)  # [B*T, C', H, W]
-        feat_vec = feat_map.reshape(B * T, -1)
-
-        # Positionsfeature vorbereiten
-
-        up = unit_pos.reshape(B * T, 2).float()
-        # Normalisierung auf [0,1]
-        norm_x = up[:, 0] / (self.input_width - 1)
-        norm_y = up[:, 1] / (self.input_height - 1)
-        pos = torch.stack([norm_x, norm_y], dim=1)
-        pos = pos.to(feat_vec.device)
-
-        feat = torch.cat([feat_vec, pos], dim=1)
-        feat = self.feature(feat)  # [B*T, H]
-        feat = feat.view(B, T, -1)  # [B, T, H]
-
-        # Rekurrenz
-        if h0 is None:
-            # Standard: Null-Initialisierung auf richtigem Device
-            h0 = feat.new_zeros(1, B, self.hidden_size)
-        out_seq, h_n = self.gru(feat, h0)
-
-        # Q-Werte Kopf
-        q_seq = self.head(out_seq)  # [B, T, n_actions]
-
-        if not is_sequence:
-            # Einzelschritt zurückformen
-            q_seq = q_seq.squeeze(1)  # [B, n_actions]
-
-        return q_seq, h_n  # h_n: [1,B,H]
-
-    # Hilfsfunktion zur Ermittlung der Encoder-Outputgröße
-    def _get_conv_out(self, shape):
+        # berechne Feature-Länge F_out
         with torch.no_grad():
-            o = self.encoder(torch.zeros(1, *shape))
-            return int(np.prod(o.size()))
+            dummy = torch.zeros(1, in_channels, h, w)
+            f = self.encoder(dummy).numel()
+        self.feat_lin = nn.Linear(f, hidden_size)  # in GRU-Eingabe projizieren
+
+        # --- reine Zustands-Rekurrenz (ohne Position!) ---
+        self.gru = nn.GRU(hidden_size, hidden_size, num_layers=gru_layers, batch_first=True)
+
+        # --- Positions-Embedding + Head ---
+        self.pos_mlp = nn.Sequential(
+            nn.Linear(2, pos_dim), nn.ReLU(),
+            nn.Linear(pos_dim, pos_dim), nn.ReLU()
+        )
+        self.head = nn.Sequential(
+            nn.Linear(hidden_size + pos_dim, hidden_size), nn.ReLU(),
+            nn.Linear(hidden_size, q_dim)
+        )
+
+    # Hilfslayer: normiere Gitterkoordinaten
+    def _norm_pos(self, pos_xy, device):
+        # pos_xy: [..., 2] in (x=j, y=i)
+        x = pos_xy[..., 0] / max(1, (self.input_width  - 1))
+        y = pos_xy[..., 1] / max(1, (self.input_height - 1))
+        return torch.stack([x, y], dim=-1).to(device).float()
+
+    @torch.no_grad()
+    def initial_state(self, B, device):
+        return torch.zeros(self.gru_layers, B, self.hidden_size, device=device)
+
+    def context(self, x5d, h0=None):
+        """
+        x5d: [B, T, C, H, W]
+        return: ctx [B, T, H], h_n [L, B, H]
+        """
+        assert x5d.dim() == 5, "erwarte [B,T,C,H,W]"
+        B, T, C, H, W = x5d.shape
+        x = x5d.reshape(B*T, C, H, W)
+        feat = self.encoder(x).reshape(B*T, -1)
+        feat = self.feat_lin(feat).relu()
+        feat = feat.view(B, T, -1)              # [B,T,H]
+        if h0 is None:
+            h0 = self.initial_state(B, x5d.device)
+        out_seq, h_n = self.gru(feat, h0)       # [B,T,H], [L,B,H]
+        return out_seq, h_n
+
+    def q_from_context(self, ctx_bt, unit_pos_bt):
+        """
+        ctx_bt: [B, T, H]   (oder [N, 1, H] wenn wir nur T=1 haben und N Units batchen)
+        unit_pos_bt: [B, T, 2] (oder [N,1,2])
+        """
+        B, T, H = ctx_bt.shape
+        ctx = ctx_bt.reshape(B*T, H)            # [B*T,H]
+        pos = self._norm_pos(unit_pos_bt.reshape(B*T, 2), ctx_bt.device)  # [B*T,2]
+        pos_e = self.pos_mlp(pos)               # [B*T,P]
+        x = torch.cat([ctx, pos_e], dim=-1)     # [B*T,H+P]
+        q = self.head(x).view(B, T, self.q_dim) # [B,T,89]
+        return q
+
+    def forward(self, x, unit_pos=None, h0=None):
+        """
+        Convenience: akzeptiert 4D ([B,C,H,W]) oder 5D.
+        Wenn 4D, wird T=1 angenommen. unit_pos optional; wenn None -> (0,0).
+        """
+        if x.dim() == 4:
+            x = x.unsqueeze(1)  # [B,1,C,H,W]
+            if unit_pos is not None and unit_pos.dim() == 2:
+                unit_pos = unit_pos.unsqueeze(1)  # [B,1,2]
+        assert x.dim() == 5
+        B, T, *_ = x.shape
+        if unit_pos is None:
+            unit_pos = x.new_zeros(B, T, 2)
+
+        ctx, h_n = self.context(x, h0)
+        q = self.q_from_context(ctx, unit_pos)  # [B,T,89]
+        return q, h_n
+
 
 
 import numpy as np
@@ -734,210 +703,118 @@ class Agent:
         num_envs = self.env.num_envs
 
         # --- Hidden-State initialisieren (GRU/LSTM) ---
-        # Erwartet: self.rnn_state ist entweder Tensor [L, E, H] bzw. Tupel (h, c) bei LSTM.
-        # Falls nicht vorhanden, hier erzeugen:
         if not hasattr(self, "rnn_state") or self.rnn_state is None:
-            def zeros_like_proto(proto):
-                return torch.zeros_like(proto)
-
-            with torch.no_grad():
-                # Eine saubere Möglichkeit: das Netz nach einem leeren State fragen,
-                # ansonsten selbst all-zeros mit den richtigen Dimensionen anlegen.
-                if not hasattr(self, "rnn_state") or self.rnn_state is None:
-                    self.rnn_state = self._init_hidden(batch_size=num_envs, device=device)
-                # Fallback: falls dein Netz keine initial_state-Methode hat:
-                # hidden_size = getattr(net, "hidden_size", 256)
-                # num_layers = getattr(net, "num_layers", 1)
-                # self.rnn_state = torch.zeros(num_layers, num_envs, hidden_size, device=device)
+            self.rnn_state = self._init_hidden(batch_size=num_envs, device=device)
 
         # Aktionen-Array für alle Units in allen Envs
         full_action = np.zeros((num_envs, h, w, 7), dtype=np.int32)
 
-        # State-Tensor (NCHW)
-        state_v = torch.tensor(self.state.transpose(0, 3, 1, 2), dtype=torch.float32, device=device)
+        # Liste für nächste RNN-States
+        next_rnn_state_list = [None] * num_envs
 
         @torch.no_grad()
         def sample_valid(mask: torch.Tensor) -> torch.Tensor:
-            """ Zufälliger Index, bei dem mask True ist. """
             idx = torch.where(mask)[0]
             if idx.numel() == 0:
                 return torch.tensor(0, device=device)
             ridx = torch.randint(idx.numel(), (1,), device=device)
             return idx[ridx]
 
-        # --- Vorwärtslauf: pro Environment genau EIN Rekurrenz-Schritt ---
-        # Wir propagieren die RNN-Hidden-States einmal pro Zeitschritt und
-        # benutzen die daraus gewonnenen Envcoder-Features für alle Units.
-        next_rnn_state_list = [None] * num_envs
-        encoder_features = [None] * num_envs
-
         net.eval()
         with torch.no_grad():
             for env_i in range(num_envs):
-                # Slice für dieses Env
-                state_v_single = state_v[env_i:env_i + 1]  # [1, C, H, W]
-
-                # Hidden-State dieses Envs vorbereiten
+                # Hidden-State extrahieren
                 if isinstance(self.rnn_state, tuple):
-                    # LSTM: (h, c) mit Shapes [L, E, H]
-                    h_t = self.rnn_state[0][:, env_i:env_i + 1, :].contiguous()
-                    c_t = self.rnn_state[1][:, env_i:env_i + 1, :].contiguous()
-                    features, (h_next, c_next) = net.encode(state_v_single, (h_t, c_t))
-                    next_rnn_state_list[env_i] = (h_next, c_next)
+                    rnn_in = (
+                        self.rnn_state[0][:, env_i:env_i + 1, :].contiguous(),
+                        self.rnn_state[1][:, env_i:env_i + 1, :].contiguous()
+                    )
                 else:
-                    # GRU o.ä.: [L, E, H]
-                    h_t = self.rnn_state[:, env_i:env_i + 1, :].contiguous()
-                    features, h_next = net.encode(state_v_single, h_t)
-                    next_rnn_state_list[env_i] = h_next
+                    rnn_in = self.rnn_state[:, env_i:env_i + 1, :].contiguous()
 
-                encoder_features[env_i] = features
+                # Einzelnes Environment als 5D-Tensor [1,1,C,H,W]
+                state_v_single_5d = torch.tensor(
+                    self.state[env_i].transpose(2, 0, 1),
+                    dtype=torch.float32,
+                    device=device
+                ).unsqueeze(0).unsqueeze(1)
 
-        # --- Aktionsauswahl pro Unit (epsilon-greedy, mit Maskierung) ---
-        with torch.no_grad():
-            for env_i in range(num_envs):
-                feats = encoder_features[env_i]  # Features für dieses Env
+                # 1) einmaliger RNN-Schritt für Kontext
+                ctx, h_next = net.context(state_v_single_5d, h0=rnn_in)
+                next_rnn_state_list[env_i] = h_next
+
+                # 2) aktive Units finden
+                pos_list, idx_list = [], []
                 for i in range(h):
                     for j in range(w):
-                        # Nur aktive eigene Unit (bit 11) und alive/owner-bit (bit 21) – wie bisher
                         if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
-                            flat_idx = i * w + j  # KORRIGIERT: w statt h
-                            # 78->89 Maske für diese Zelle
-                            cell_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat_idx])
+                            pos_list.append([j, i])
+                            idx_list.append((i, j))
+                if len(pos_list) == 0:
+                    continue
 
-                            # Epsilon-greedy
-                            if np.random.random() < epsilon:
-                                # 1) Action-Type mit Originalmaske (0..5: 6 Typen)
-                                a_type = sample_valid(raw_masks[env_i, flat_idx][0:6]).item()
-                                full_action[env_i, i, j, 0] = a_type
-                                # 2) Feinaktion mit der konvertierten 89er-Maske
-                                if a_type == 1:
-                                    single_action = sample_valid(cell_mask[0:4]).item()
-                                elif a_type == 2:
-                                    single_action = sample_valid(cell_mask[4:8]).item()
-                                elif a_type == 3:
-                                    single_action = sample_valid(cell_mask[8:12]).item()
-                                elif a_type == 4:
-                                    single_action = sample_valid(cell_mask[12:40]).item()
-                                elif a_type == 5:
-                                    single_action = sample_valid(cell_mask[40:89]).item()
-                                else:
-                                    single_action = sample_valid(cell_mask).item()
+                pos_bt = torch.tensor(pos_list, dtype=torch.float32, device=device).unsqueeze(1)  # [N,1,2]
+                ctx_bt = ctx.repeat(len(pos_list), 1, 1)  # [N,1,H]
 
-                                full_action[env_i, i, j] = self.qval_to_action(single_action)
+                # 3) Q-Werte für alle Units
+                q_all = net.q_from_context(ctx_bt, pos_bt)[:, 0, :]  # [N,89]
 
-                            else:
-                                # Exploitation mit Head über die (einmal) rekurrent kodierten Features
-                                unit_pos = torch.tensor([[j, i]], dtype=torch.float32, device=device)  # [1, 2]
-                                q_vals = net.head(feats, unit_pos)[0]  # [89]
-                                masked_q_vals = q_vals.masked_fill(~cell_mask, -1e9)
-                                q_val = torch.argmax(masked_q_vals).item()
-                                full_action[env_i, i, j] = self.qval_to_action(q_val)
+                # 4) Maskieren + Aktion auswählen
+                for k, (i, j) in enumerate(idx_list):
+                    flat_idx = i * w + j
+                    cell_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat_idx])
 
-        # --- Schritt ausführen ---
-        prev_state = self.state.copy()
-        new_state, reward, is_done, infos = self.env.step(full_action.reshape(self.env.num_envs, -1))
-        next_raw_masks = self.env.venv.venv.get_action_mask()
+                    if np.random.random() < epsilon:
+                        a_type = sample_valid(raw_masks[env_i, flat_idx][0:6]).item()
+                        full_action[env_i, i, j, 0] = a_type
+                        if a_type == 1:
+                            single_action = sample_valid(cell_mask[0:4]).item()
+                        elif a_type == 2:
+                            single_action = sample_valid(cell_mask[4:8]).item()
+                        elif a_type == 3:
+                            single_action = sample_valid(cell_mask[8:12]).item()
+                        elif a_type == 4:
+                            single_action = sample_valid(cell_mask[12:40]).item()
+                        elif a_type == 5:
+                            single_action = sample_valid(cell_mask[40:89]).item()
+                        else:
+                            single_action = sample_valid(cell_mask).item()
+                    else:
+                        q_vals = q_all[k].masked_fill(~cell_mask, -1e9)
+                        single_action = torch.argmax(q_vals).item()
 
-        # --- Replay Buffer befüllen (inkl. Hidden-States t und t+1) ---
-        for env_i in range(num_envs):
-            # Hidden t/ t+1 dieses Envs (für N-Step/Bootstrapping)
-            if isinstance(self.rnn_state, tuple):
-                hidden_t = (self.rnn_state[0][:, env_i:env_i + 1, :].detach().cpu(),
-                            self.rnn_state[1][:, env_i:env_i + 1, :].detach().cpu())
-                hidden_tp1 = (next_rnn_state_list[env_i][0].detach().cpu(),
-                              next_rnn_state_list[env_i][1].detach().cpu())
-            else:
-                hidden_t = self.rnn_state[:, env_i:env_i + 1, :].detach().cpu()
-                hidden_tp1 = next_rnn_state_list[env_i].detach().cpu()
+                    full_action[env_i, i, j] = self.qval_to_action(single_action)
 
-            for i in range(h):
-                for j in range(w):
-                    if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
-                        flat_idx = i * w + j  # KORRIGIERT: w statt h
-                        action_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat_idx])
-                        next_action_mask = self.convert_78_to_89_mask(next_raw_masks[env_i, flat_idx])
-
-                        single_action = np.array(full_action[env_i, i, j], dtype=np.int64)
-                        single_action = self.action_to_qval(single_action)
-
-                        # Optional: wenn dein Buffer keine Hidden-States speichert, entferne hidden_t/hidden_tp1
-                        self.exp_buffer.append(
-                            prev_state[env_i],
-                            single_action,
-                            reward[env_i],
-                            is_done[env_i],
-                            new_state[env_i],
-                            (j, i),
-                            action_mask,
-                            next_action_mask,
-                            hidden_t,
-                            hidden_tp1
-                        )
-
-        # --- Hidden-State für nächste Zeitscheibe übernehmen & ggf. resetten ---
-        def detach_hidden(h):
-            if isinstance(h, tuple):
-                return (h[0].detach(), h[1].detach())
-            return h.detach()
-
-        if isinstance(self.rnn_state, tuple):
-            h_list = []
-            c_list = []
+            # --- RNN-Weiterführung t->t+1 ---
             for env_i in range(num_envs):
-                h_i, c_i = next_rnn_state_list[env_i]
-                # Wenn Episode beendet, Hidden auf 0 setzen
-                if is_done[env_i]:
-                    h_i = torch.zeros_like(h_i)
-                    c_i = torch.zeros_like(c_i)
-                h_list.append(h_i)
-                c_list.append(c_i)
-            self.rnn_state = (
-                torch.cat(h_list, dim=1),  # [L, E, H]
-                torch.cat(c_list, dim=1)
-            )
-            self.rnn_state = (detach_hidden(self.rnn_state[0]), detach_hidden(self.rnn_state[1]))
-        else:
-            h_list = []
-            for env_i in range(num_envs):
-                h_i = next_rnn_state_list[env_i]
-                if is_done[env_i]:
-                    h_i = torch.zeros_like(h_i)
-                h_list.append(h_i)
-            self.rnn_state = torch.cat(h_list, dim=1)  # [L, E, H]
-            self.rnn_state = detach_hidden(self.rnn_state)
+                if isinstance(self.rnn_state, tuple):
+                    rnn_in = (
+                        self.rnn_state[0][:, env_i:env_i + 1, :].contiguous(),
+                        self.rnn_state[1][:, env_i:env_i + 1, :].contiguous()
+                    )
+                else:
+                    rnn_in = self.rnn_state[:, env_i:env_i + 1, :].contiguous()
 
-        # --- Episodenabschluss / Logging ---
-        self.state = new_state
-        for env_i in range(num_envs):
-            self.total_rewards[env_i] += reward[env_i]
-            self.episode_steps[env_i] += 1
+                ys, xs = [], []
+                for ii in range(h):
+                    for jj in range(w):
+                        if self.state[env_i, ii, jj, 11] == 1 and self.state[env_i, ii, jj, 21] == 1:
+                            ys.append(ii)
+                            xs.append(jj)
+                if len(xs) == 0:
+                    cen = torch.tensor([[[0.0, 0.0]]], device=device)
+                else:
+                    cen = torch.tensor([[[float(np.mean(xs)), float(np.mean(ys))]]], device=device)
 
-        for env_i in range(num_envs):
-            if is_done[env_i]:
-                ep = self.env_episode_counter[env_i]
-                shaped = self.total_rewards[env_i]
-                steps = self.episode_steps[env_i]
-                raw_stats = infos[env_i].get("microrts_stats", {})
+                # wieder den gleichen state_5d nutzen
+                state_v_single_5d = torch.tensor(
+                    self.state[env_i].transpose(2, 0, 1),
+                    dtype=torch.float32,
+                    device=device
+                ).unsqueeze(0).unsqueeze(1)
 
-                episode_info = {
-                    "env": env_i,
-                    "episode": ep,
-                    "reward": shaped,
-                    "steps": steps,
-                    "epsilon": epsilon
-                }
-                for k in ["WinLoss", "ResourceGather", "ProduceWorker", "ProduceBuilding", "Attack",
-                          "ProduceCombatUnit"]:
-                    episode_info[k] = raw_stats.get(f"{k}RewardFunction", 0.0)
-
-                episode_results.append(episode_info)
-
-                # Reset für nächste Episode
-                self.env_episode_counter[env_i] += 1
-                self.total_rewards[env_i] = 0.0
-                self.episode_steps[env_i] = 0
-
-        return {"done": False, "episode_stats": episode_results}
+                _, h_next = net(state_v_single_5d, unit_pos=cen, h0=rnn_in)
+                next_rnn_state_list[env_i] = h_next
 
     def _stack_bool_mask(mask_list, device):
         if mask_list is None:
