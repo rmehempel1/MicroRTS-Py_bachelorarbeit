@@ -297,6 +297,11 @@ class UASDRQN(nn.Module):
 import numpy as np
 from collections import deque
 
+from collections import deque
+from typing import Any, Callable, Deque, Optional, Tuple, List
+import numpy as np
+
+
 class ReplayBuffer:
     """
     Replay-Buffer mit Unterstützung für:
@@ -304,167 +309,257 @@ class ReplayBuffer:
       - N-Step-Returns (online)
       - λ-Returns (episodenweise; benötigt value_fn)
 
+    RNN-fähig:
+      - Optionales Mitspeichern von Hidden-States (hidden_t, hidden_tp1)
+      - Optionales Mitspeichern der Folg(e)position der handelnden Unit (unit_pos_next)
+
+    Erwartete value_fn-Signatur (flexibel, optionale Argumente):
+        value_fn(next_state, next_action_mask, unit_pos_next=None, hidden_tp1=None) -> float
+
+    Gespeichertes Transition-Format (Tuple):
+        (state, action, return_or_reward, done, next_state,
+         unit_pos, action_masks, next_action_masks,
+         hidden_t, hidden_tp1, unit_pos_next)
+
     Hinweise:
-    - Für DQN ist ein gängiger Value-Schätzer: V(s) = max_a Q_target(s, a | mask)
-    - Für λ-Returns werden am Episodenende alle Übergänge mit G^λ berechnet und in den Hauptpuffer geschrieben.
+      - Bei N-Step wird 'return_or_reward' zum N-Step-Return R_n.
+      - Bei λ-Returns wird 'return_or_reward' zu G^λ_t.
+      - Für 1-Step ist es schlicht r_t (oder R_1).
+
+    Parameter:
+      capacity     : max. Größe des Hauptpuffers (Ringpuffer)
+      state_shape  : Form von state (z.B. [H, W, C]) – informativ, keine Striktprüfung
+      action_shape : Form von action (z.B. [7] bei MicroRTS) – informativ
+      gamma        : Diskontfaktor
+      n_step       : N für N-Step-Returns (n_step=1 => 1-Step)
+      use_lambda   : True => nutze episodenweise λ-Returns
+      lam          : λ in [0,1]
+      value_fn     : Callable zur Bootstrap-Schätzung V(s_{t+1} | optional hidden_tp1)
+      store_hidden : Ob hidden_t/hidden_tp1 abgelegt werden sollen (True empfohlen bei RNN)
     """
-    def __init__(self, capacity, state_shape, action_shape,
-                 gamma=0.99,
-                 n_step=1,
-                 use_lambda=False,
-                 lam=0.95,
-                 value_fn=None):
-        self.buffer = deque(maxlen=capacity)
-        self.state_shape = state_shape
-        self.action_shape = action_shape
+
+    def __init__(self,
+                 capacity: int,
+                 state_shape: Tuple[int, ...],
+                 action_shape: Tuple[int, ...],
+                 gamma: float = 0.99,
+                 n_step: int = 1,
+                 use_lambda: bool = False,
+                 lam: float = 0.95,
+                 value_fn: Optional[Callable[..., float]] = None,
+                 store_hidden: bool = True):
+        self.buffer: Deque[tuple] = deque(maxlen=int(capacity))
+        self.state_shape = tuple(state_shape)
+        self.action_shape = tuple(action_shape)
 
         # Rückgabe-Optionen
         self.gamma = float(gamma)
-        self.n_step = int(n_step)
+        self.n_step = int(max(1, n_step))
         self.use_lambda = bool(use_lambda)
         self.lam = float(lam)
-        self.value_fn = value_fn  # callable(next_state, next_action_mask, unit_pos_next) -> V(next_state)
+        self.value_fn = value_fn
+        self.store_hidden = bool(store_hidden)
 
         # Für N-step Aggregation (online)
-        self._nstep_queue = deque()  # enthält (s,a,r,done,s_next,pos,mask,mask_next)
-        self._nstep_R = 0.0
-        self._nstep_gamma = 1.0
+        # enthält (s,a,r,done,s_next,pos,mask,mask_next,h_t,h_tp1,pos_next)
+        self._nstep_queue: Deque[tuple] = deque()
+        self._nstep_R: float = 0.0
+        self._nstep_gamma: float = 1.0
 
         # Für λ-Returns (Episodenpuffer)
-        self._episode = []  # list of transitions wie oben
+        # list of transitions wie oben
+        self._episode: List[tuple] = []
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.buffer)
 
     # ----------- öffentliche API -----------
-    def append(self, state, action, reward, done, next_state, unit_pos, action_masks, next_action_masks):
-        tr = (state, action, reward, done, next_state, unit_pos, action_masks, next_action_masks)
+
+    def append(self,
+               state: np.ndarray,
+               action: np.ndarray,
+               reward: float,
+               done: bool,
+               next_state: np.ndarray,
+               unit_pos: Tuple[int, int],
+               action_masks: Any,
+               next_action_masks: Any,
+               hidden_t: Optional[Any] = None,
+               hidden_tp1: Optional[Any] = None,
+               unit_pos_next: Optional[Tuple[int, int]] = None) -> None:
+        """
+        Fügt eine Transition hinzu. Je nach Modus (λ vs. n-step) wird sie
+        direkt in den Hauptpuffer aggregiert oder zunächst gesammelt.
+        """
+        # Falls Hidden-States nicht gespeichert werden sollen, auf None setzen
+        if not self.store_hidden:
+            hidden_t = None
+            hidden_tp1 = None
+
+        tr = (state, action, float(reward), bool(done), next_state,
+              unit_pos, action_masks, next_action_masks,
+              hidden_t, hidden_tp1, unit_pos_next)
 
         if self.use_lambda:
-            # Sammle die Episode; schreibe erst am Ende G^λ in self.buffer
             self._episode.append(tr)
             if done:
                 self._flush_episode_lambda()
                 self._episode.clear()
         else:
-            # N-step (inkl. 1-step als Spezialfall)
             self._push_nstep(tr)
 
-    def sample(self, batch_size):
+    def sample(self, batch_size: int):
+        """
+        Zieht zufällige Batches ohne Zurücklegen.
+        Gibt Arrays für states/actions/... zurück; Masken/Hidden-States werden als
+        Liste/Struktur zurückgegeben, um heterogene Shapes zu erlauben.
+        """
+        assert len(self.buffer) >= batch_size, "ReplayBuffer: zu wenige Samples."
+
         idx = np.random.choice(len(self.buffer), batch_size, replace=False)
         samples = [self.buffer[i] for i in idx]
-        states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks = zip(*samples)
 
-        states = np.array(states, copy=False)                 # [B, H, W, C]  (deine Ordnung beibehalten)
-        actions = np.stack(actions)                           # [B, ...]
-        rewards = np.array(rewards, copy=False).astype(np.float32)  # [B]
-        dones = np.array(dones, copy=False).astype(np.bool_)         # [B]
-        next_states = np.array(next_states, copy=False)       # [B, H, W, C]
-        unit_positions = np.array(unit_positions, copy=False) # [B, 2]
-        # action_masks / next_action_masks bleiben als Tuple/Liste (evtl. heterogene Shapes)
+        (states, actions, returns, dones, next_states,
+         unit_positions, action_masks, next_action_masks,
+         hidden_t, hidden_tp1, unit_pos_next) = zip(*samples)
 
-        return states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks
+        states = np.array(states, copy=False)                 # [B, ...state_shape]
+        actions = np.stack(actions)                           # [B, ...action_shape]
+        returns = np.asarray(returns, dtype=np.float32)       # [B]
+        dones = np.asarray(dones, dtype=np.bool_)             # [B]
+        next_states = np.array(next_states, copy=False)       # [B, ...state_shape]
+        unit_positions = np.asarray(unit_positions, dtype=np.int32)  # [B, 2]
+        # action_masks / next_action_masks heterogen → als Tuple zurückgeben
+        unit_pos_next = np.asarray(unit_pos_next, dtype=object) if any(p is not None for p in unit_pos_next) else None
 
-    # Wenn du das Training vor Episodenende abbrichst (z. B. Timeout), kannst du offene Episoden/Queues flushen:
-    def finalize_pending(self):
+        # Hidden-States ggf. als Liste/Tuple zurückgeben (keine Annahmen über Typ/Shape)
+        hidden_t = list(hidden_t)
+        hidden_tp1 = list(hidden_tp1)
+
+        return (states, actions, returns, dones, next_states,
+                unit_positions, action_masks, next_action_masks,
+                hidden_t, hidden_tp1, unit_pos_next)
+
+    def finalize_pending(self) -> None:
+        """
+        Am Episoden-/Trainingsende aufrufen, um offene Aggregationen zu flushen.
+        """
         if self.use_lambda and len(self._episode) > 0:
             self._flush_episode_lambda()
             self._episode.clear()
-        # Restliche n-step Übergänge ohne weiteren Bootstrap (nur falls gewünscht):
         self._flush_nstep_tail()
 
     # ----------- interne Helfer -----------
-    def _push_nstep(self, tr):
-        """Online N-step Aggregation. Schreibt fertige N-step-Übergänge in self.buffer."""
-        s, a, r, done, s_next, pos, mask, mask_next = tr
+
+    def _push_nstep(self, tr: tuple) -> None:
+        """
+        Online N-step Aggregation. Schreibt fertige N-step-Übergänge in self.buffer.
+        """
+        (s, a, r, done, s_next, pos, mask, mask_next, h_t, h_tp1, pos_next) = tr
         self._nstep_queue.append(tr)
 
-        # Akkumuliere Return und Discount
+        # Akkumuliere Return und Discount (laufendes Fenster)
         self._nstep_R += self._nstep_gamma * float(r)
         self._nstep_gamma *= self.gamma
 
-        # Sobald wir n Schritte haben oder die Episode terminiert, schreiben wir den Übergang
+        # Wenn wir n Schritte beisammen haben oder die Episode endet → schreiben
         if len(self._nstep_queue) >= self.n_step or done:
-            # Head-Transition (s_t, a_t, ..., mask_t)
-            s0, a0, _, d0, _, pos0, mask0, _ = self._nstep_queue[0]
+            # Kopf-Transition (Zeit t)
+            (s0, a0, _, d0, _, pos0, mask0, _, h0, _, _) = self._nstep_queue[0]
+            # Letzter Eintrag (Zeit t+k-1)
+            (_, _, _, d_last, s_last, _, _, mask_last, _, h_last, pos_last_next) = self._nstep_queue[-1]
 
-            # N-step Bootstrap-Zustand ist der letzte der Queue
-            _, _, _, d_last, s_last, pos_last, _, mask_last = self._nstep_queue[-1]
+            Rn = self._nstep_R  # bereits korrekt diskontiert für die im Fenster liegenden Rewards
+            # Kein weiteres Bootstrap hier: Bootstrapping geschieht später bei Target-Berechnung über value_fn/Q_target.
 
-            # Wenn die Episode vorzeitig endet, bootstrapen wir nicht über den Terminus hinaus
-            Rn = self._nstep_R
-            if not d_last and len(self._nstep_queue) >= self.n_step:
-                # nichts weiter zu tun: Rn hat bereits n Schritte (inkl. Discount)
-                pass
-            # Schreibe fertigen Übergang
-            self.buffer.append((s0, a0, Rn, d_last, s_last, pos0, mask0, mask_last))
+            self.buffer.append((
+                s0, a0, Rn, d_last, s_last,
+                pos0, mask0, mask_last,
+                h0, h_last, pos_last_next
+            ))
 
-            # Slide-Fenster: entferne die erste Transition und aktualisiere Akkus
-            s_pop, a_pop, r_pop, d_pop, _, _, _, _ = self._nstep_queue.popleft()
-            self._nstep_R = (self._nstep_R - float(r_pop)) / self.gamma  # inverse der vorherigen Update-Formel
-            # Achtung: korrekte Rückrechnung des Discounts:
-            # vorher: R += gamma_pow * r; gamma_pow *= gamma
-            # für Pop: (R - r0) / gamma
+            # Fenster nach vorn schieben (erste Transition entfernen) + Akkus anpassen
+            _, _, r_pop, _, _, _, _, _, _, _, _ = self._nstep_queue.popleft()
+            # inverse der Update-Formel: vorher R += g*r; g*=gamma
+            self._nstep_R = (self._nstep_R - float(r_pop)) / self.gamma
             self._nstep_gamma /= self.gamma
 
-        # Bei Episodenende: restliche Schritte in Fenster ohne weiteres Bootstrap schreiben
+        # Bei Episodenende: Rest ohne weiteres Bootstrap flushen
         if done:
             self._flush_nstep_tail()
 
-    def _flush_nstep_tail(self):
-        """Flush aller verbleibenden N-step Übergänge ohne weiteres Bootstrap (Ende Episode)."""
+    def _flush_nstep_tail(self) -> None:
+        """
+        Flush aller verbleibenden N-step Übergänge ohne weiteres Bootstrap (Ende Episode).
+        """
         while len(self._nstep_queue) > 0:
-            # Rechne aktuellen akkumulierten Return von der Queue neu (ohne Bootstrap)
+            # Rechne aktuellen akkumulierten Return der Queue neu (ohne Bootstrap)
             R = 0.0
             g = 1.0
-            for _, _, r, _, _, _, _, _ in self._nstep_queue:
+            for _, _, r, _, _, _, _, _, _, _, _ in self._nstep_queue:
                 R += g * float(r)
                 g *= self.gamma
 
-            s0, a0, _, d0, _, pos0, mask0, _ = self._nstep_queue[0]
-            _, _, _, d_last, s_last, _, _, mask_last = self._nstep_queue[-1]
-            self.buffer.append((s0, a0, R, d_last, s_last, pos0, mask0, mask_last))
-            self._nstep_queue.popleft()
+            (s0, a0, _, d0, _, pos0, mask0, _, h0, _, _) = self._nstep_queue[0]
+            (_, _, _, d_last, s_last, _, _, mask_last, _, h_last, pos_last_next) = self._nstep_queue[-1]
+
+            self.buffer.append((
+                s0, a0, R, d_last, s_last,
+                pos0, mask0, mask_last,
+                h0, h_last, pos_last_next
+            ))
+            self._nstep_queue.pop() if len(self._nstep_queue) == 1 else self._nstep_queue.popleft()
 
         self._nstep_R = 0.0
         self._nstep_gamma = 1.0
 
-    def _flush_episode_lambda(self):
+    def _flush_episode_lambda(self) -> None:
         """
-        Berechnet G^λ für die gesammelte Episode und schreibt 1-Step-ähnliche Tupel in self.buffer:
-        (s_t, a_t, G^λ_t, done_t', s_{t+1..}, pos_t, mask_t, mask_{t+1..})
-        Bootstrap über value_fn am jeweiligen Folgezustand.
+        Berechnet G^λ für die gesammelte Episode und schreibt 1-Step-ähnliche Tupel in den Hauptpuffer:
+            (s_t, a_t, G^λ_t, done_t, s_{t+1}, pos_t, mask_t, mask_{t+1}, h_t, h_{t+1}, unit_pos_next_t)
+
+        Bootstrap über value_fn am jeweiligen Folgezustand. Terminals erhalten V=0.
         """
         assert self.value_fn is not None, "Für λ-Returns muss value_fn gesetzt sein."
 
-        ep = self._episode  # Kurzname
+        ep = self._episode
         T = len(ep)
+        if T == 0:
+            return
 
         # V_{t+1} für alle t bestimmen (Bootstrap-Ziel am Folgezustand)
-        # Terminalzustände erhalten V=0
         V_next = np.zeros((T,), dtype=np.float32)
-        for t, (_, _, _, done, next_state, unit_pos, _, next_mask) in enumerate(ep):
+        for t, (_, _, _, done, next_state, _, _, next_mask, _, hidden_tp1, unit_pos_next) in enumerate(ep):
             if not done:
-                V_next[t] = float(self.value_fn(next_state, next_mask, unit_pos))
+                # value_fn darf optionale Argumente ignorieren; wir übergeben sie best-effort
+                try:
+                    V_next[t] = float(self.value_fn(next_state, next_mask,
+                                                    unit_pos_next=unit_pos_next,
+                                                    hidden_tp1=hidden_tp1))
+                except TypeError:
+                    # Fallback auf alte Signatur
+                    V_next[t] = float(self.value_fn(next_state, next_mask, unit_pos_next))
             else:
                 V_next[t] = 0.0
 
         # Rückwärts-Rekursion für G^λ:
-        #   G_T^λ = r_T + γ * V_{T+1}    (falls letzter Schritt nicht terminal — sonst ohne Bootstrap)
+        #   G_T^λ = r_T + γ * V_{T+1} (falls letzter Schritt nicht terminal; sonst nur r_T)
         #   G_t^λ = r_t + γ * ((1-λ) * V_{t+1} + λ * G_{t+1}^λ)
         G_lam = np.zeros((T,), dtype=np.float32)
         for t in reversed(range(T)):
-            s, a, r, done, next_state, pos, mask, next_mask = ep[t]
+            s, a, r, done, next_state, pos, mask, next_mask, h_t, h_tp1, pos_next = ep[t]
             if done:
-                G_lam[t] = float(r)  # am Terminus kein Bootstrap
+                G_lam[t] = float(r)
             else:
-                bootstrap = (1.0 - self.lam) * V_next[t] + self.lam * (G_lam[t+1] if t+1 < T else V_next[t])
+                bootstrap = (1.0 - self.lam) * V_next[t] + self.lam * (G_lam[t + 1] if t + 1 < T else V_next[t])
                 G_lam[t] = float(r) + self.gamma * bootstrap
 
-        # Schreibe die Episoden-Übergänge als (s_t, a_t, G^λ_t, done_t, next_state_t, ...)
+        # Schreibe Episoden-Übergänge
         for t in range(T):
-            s, a, r, done, next_state, pos, mask, next_mask = ep[t]
-            self.buffer.append((s, a, float(G_lam[t]), done, next_state, pos, mask, next_mask))
+            s, a, r, done, s_next, pos, mask, mask_next, h_t, h_tp1, pos_next = ep[t]
+            self.buffer.append((s, a, float(G_lam[t]), done, s_next,
+                                pos, mask, mask_next, h_t, h_tp1, pos_next))
+
 
 class Agent:
     def __init__(self, env, exp_buffer, net, device="cpu"):
@@ -591,87 +686,144 @@ class Agent:
 
         return m89
 
-    def play_step(self, epsilon=0.0):
+    def play_step(self, epsilon: float = 0.0):
         net = self.net
         device = self.device
         episode_results = []
-        raw_masks_np = self.env.venv.venv.get_action_mask()
-        raw_masks = torch.from_numpy(raw_masks_np).to(device=device).bool() # [num_envs, H*W, 78]
+
+        # --- Masken & Shapes ---
+        raw_masks_np = self.env.venv.venv.get_action_mask()  # [num_envs, H*W, 78]
+        raw_masks = torch.from_numpy(raw_masks_np).to(device=device).bool()
         _, h, w, _ = self.state.shape
         num_envs = self.env.num_envs
 
+        # --- Hidden-State initialisieren (GRU/LSTM) ---
+        # Erwartet: self.rnn_state ist entweder Tensor [L, E, H] bzw. Tupel (h, c) bei LSTM.
+        # Falls nicht vorhanden, hier erzeugen:
+        if not hasattr(self, "rnn_state") or self.rnn_state is None:
+            def zeros_like_proto(proto):
+                return torch.zeros_like(proto)
 
+            with torch.no_grad():
+                # Eine saubere Möglichkeit: das Netz nach einem leeren State fragen,
+                # ansonsten selbst all-zeros mit den richtigen Dimensionen anlegen.
+                self.rnn_state = net.initial_state(batch_size=num_envs, device=device)
+                # Fallback: falls dein Netz keine initial_state-Methode hat:
+                # hidden_size = getattr(net, "hidden_size", 256)
+                # num_layers = getattr(net, "num_layers", 1)
+                # self.rnn_state = torch.zeros(num_layers, num_envs, hidden_size, device=device)
+
+        # Aktionen-Array für alle Units in allen Envs
         full_action = np.zeros((num_envs, h, w, 7), dtype=np.int32)
+
+        # State-Tensor (NCHW)
         state_v = torch.tensor(self.state.transpose(0, 3, 1, 2), dtype=torch.float32, device=device)
 
-        def sample_valid(mask):
-            """ Gibt einen zufällig ausgewählten Index zurück, bei dem die Eingabemaske True ist."""
+        @torch.no_grad()
+        def sample_valid(mask: torch.Tensor) -> torch.Tensor:
+            """ Zufälliger Index, bei dem mask True ist. """
             idx = torch.where(mask)[0]
-            return idx[torch.randint(len(idx), (1,))] if len(idx) > 0 else torch.tensor(0, device=device)
+            if idx.numel() == 0:
+                return torch.tensor(0, device=device)
+            ridx = torch.randint(idx.numel(), (1,), device=device)
+            return idx[ridx]
 
-        for env_i in range(num_envs):
-            for i in range(h):
-                for j in range(w):
-                    if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
-                        flat_idx = i * w + j                                                                            # wird hierndie richtige Zelle ausgewählt, stimmt der Flat:index?
-                        cell_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat_idx])
-                        # --- Aktionsauswahl ---
-                        if np.random.random() < epsilon:
-                            #Originale Maske für die gültigen Action Types
-                            a_type = sample_valid(raw_masks[env_i, flat_idx][0:6]).item()
-                            full_action[env_i, i, j, 0] = a_type
-                            #Mit konvertierter Maske
-                            if a_type == 1:
-                                single_action= sample_valid(cell_mask[0:4]).item()
-                            elif a_type == 2:
-                                single_action = sample_valid(cell_mask[4:8]).item()
-                            elif a_type == 3:
-                                single_action = sample_valid(cell_mask[8:12]).item()
-                            elif a_type == 4:
-                                single_action = sample_valid(cell_mask[12:40]).item()
-                            elif a_type == 5:
-                                single_action = sample_valid(cell_mask[40:89]).item()
+        # --- Vorwärtslauf: pro Environment genau EIN Rekurrenz-Schritt ---
+        # Wir propagieren die RNN-Hidden-States einmal pro Zeitschritt und
+        # benutzen die daraus gewonnenen Envcoder-Features für alle Units.
+        next_rnn_state_list = [None] * num_envs
+        encoder_features = [None] * num_envs
+
+        net.eval()
+        with torch.no_grad():
+            for env_i in range(num_envs):
+                # Slice für dieses Env
+                state_v_single = state_v[env_i:env_i + 1]  # [1, C, H, W]
+
+                # Hidden-State dieses Envs vorbereiten
+                if isinstance(self.rnn_state, tuple):
+                    # LSTM: (h, c) mit Shapes [L, E, H]
+                    h_t = self.rnn_state[0][:, env_i:env_i + 1, :].contiguous()
+                    c_t = self.rnn_state[1][:, env_i:env_i + 1, :].contiguous()
+                    features, (h_next, c_next) = net.encode(state_v_single, (h_t, c_t))
+                    next_rnn_state_list[env_i] = (h_next, c_next)
+                else:
+                    # GRU o.ä.: [L, E, H]
+                    h_t = self.rnn_state[:, env_i:env_i + 1, :].contiguous()
+                    features, h_next = net.encode(state_v_single, h_t)
+                    next_rnn_state_list[env_i] = h_next
+
+                encoder_features[env_i] = features
+
+        # --- Aktionsauswahl pro Unit (epsilon-greedy, mit Maskierung) ---
+        with torch.no_grad():
+            for env_i in range(num_envs):
+                feats = encoder_features[env_i]  # Features für dieses Env
+                for i in range(h):
+                    for j in range(w):
+                        # Nur aktive eigene Unit (bit 11) und alive/owner-bit (bit 21) – wie bisher
+                        if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
+                            flat_idx = i * w + j  # KORRIGIERT: w statt h
+                            # 78->89 Maske für diese Zelle
+                            cell_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat_idx])
+
+                            # Epsilon-greedy
+                            if np.random.random() < epsilon:
+                                # 1) Action-Type mit Originalmaske (0..5: 6 Typen)
+                                a_type = sample_valid(raw_masks[env_i, flat_idx][0:6]).item()
+                                full_action[env_i, i, j, 0] = a_type
+                                # 2) Feinaktion mit der konvertierten 89er-Maske
+                                if a_type == 1:
+                                    single_action = sample_valid(cell_mask[0:4]).item()
+                                elif a_type == 2:
+                                    single_action = sample_valid(cell_mask[4:8]).item()
+                                elif a_type == 3:
+                                    single_action = sample_valid(cell_mask[8:12]).item()
+                                elif a_type == 4:
+                                    single_action = sample_valid(cell_mask[12:40]).item()
+                                elif a_type == 5:
+                                    single_action = sample_valid(cell_mask[40:89]).item()
+                                else:
+                                    single_action = sample_valid(cell_mask).item()
+
+                                full_action[env_i, i, j] = self.qval_to_action(single_action)
+
                             else:
-                                single_action = sample_valid(cell_mask).item()
-                            full_action[env_i, i, j]=self.qval_to_action(single_action)
-
-
-                        else:
-
-                            # Eingabe vorbereiten für genau eine Unit:
-                            state_v_single = state_v[env_i:env_i + 1]  # Form: [1, C, H, W]
-                            unit_pos = torch.tensor([[j, i]], dtype=torch.float32, device=device)  # Form: [1, 2]
-
-                            # Netz aufrufen
-                            q_vals_v = net(state_v_single, unit_pos=unit_pos)[0]  # jetzt Shape: [89]
-
-                            # Maskierung anwenden
-                            masked_q_vals = q_vals_v.masked_fill(~cell_mask, -1e9)
-
-                            # Beste gültige Aktion auswählen
-                            q_val = torch.argmax(masked_q_vals).item()
-
-                            # Umwandlung in Aktionsarray
-                            full_action[env_i, i, j] = self.qval_to_action(q_val)
-
+                                # Exploitation mit Head über die (einmal) rekurrent kodierten Features
+                                unit_pos = torch.tensor([[j, i]], dtype=torch.float32, device=device)  # [1, 2]
+                                q_vals = net.head(feats, unit_pos)[0]  # [89]
+                                masked_q_vals = q_vals.masked_fill(~cell_mask, -1e9)
+                                q_val = torch.argmax(masked_q_vals).item()
+                                full_action[env_i, i, j] = self.qval_to_action(q_val)
 
         # --- Schritt ausführen ---
         prev_state = self.state.copy()
         new_state, reward, is_done, infos = self.env.step(full_action.reshape(self.env.num_envs, -1))
-        #envs.venv.venv.render(mode="human")
         next_raw_masks = self.env.venv.venv.get_action_mask()
 
-        # --- Replay Buffer befüllen ---
+        # --- Replay Buffer befüllen (inkl. Hidden-States t und t+1) ---
         for env_i in range(num_envs):
+            # Hidden t/ t+1 dieses Envs (für N-Step/Bootstrapping)
+            if isinstance(self.rnn_state, tuple):
+                hidden_t = (self.rnn_state[0][:, env_i:env_i + 1, :].detach().cpu(),
+                            self.rnn_state[1][:, env_i:env_i + 1, :].detach().cpu())
+                hidden_tp1 = (next_rnn_state_list[env_i][0].detach().cpu(),
+                              next_rnn_state_list[env_i][1].detach().cpu())
+            else:
+                hidden_t = self.rnn_state[:, env_i:env_i + 1, :].detach().cpu()
+                hidden_tp1 = next_rnn_state_list[env_i].detach().cpu()
+
             for i in range(h):
                 for j in range(w):
                     if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
-                        flat_idx = i * h + j
+                        flat_idx = i * w + j  # KORRIGIERT: w statt h
                         action_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat_idx])
                         next_action_mask = self.convert_78_to_89_mask(next_raw_masks[env_i, flat_idx])
+
                         single_action = np.array(full_action[env_i, i, j], dtype=np.int64)
                         single_action = self.action_to_qval(single_action)
 
+                        # Optional: wenn dein Buffer keine Hidden-States speichert, entferne hidden_t/hidden_tp1
                         self.exp_buffer.append(
                             prev_state[env_i],
                             single_action,
@@ -680,21 +832,56 @@ class Agent:
                             new_state[env_i],
                             (j, i),
                             action_mask,
-                            next_action_mask
+                            next_action_mask,
+                            hidden_t,
+                            hidden_tp1
                         )
 
-        # --- Episodenabschluss ---
+        # --- Hidden-State für nächste Zeitscheibe übernehmen & ggf. resetten ---
+        def detach_hidden(h):
+            if isinstance(h, tuple):
+                return (h[0].detach(), h[1].detach())
+            return h.detach()
+
+        if isinstance(self.rnn_state, tuple):
+            h_list = []
+            c_list = []
+            for env_i in range(num_envs):
+                h_i, c_i = next_rnn_state_list[env_i]
+                # Wenn Episode beendet, Hidden auf 0 setzen
+                if is_done[env_i]:
+                    h_i = torch.zeros_like(h_i)
+                    c_i = torch.zeros_like(c_i)
+                h_list.append(h_i)
+                c_list.append(c_i)
+            self.rnn_state = (
+                torch.cat(h_list, dim=1),  # [L, E, H]
+                torch.cat(c_list, dim=1)
+            )
+            self.rnn_state = (detach_hidden(self.rnn_state[0]), detach_hidden(self.rnn_state[1]))
+        else:
+            h_list = []
+            for env_i in range(num_envs):
+                h_i = next_rnn_state_list[env_i]
+                if is_done[env_i]:
+                    h_i = torch.zeros_like(h_i)
+                h_list.append(h_i)
+            self.rnn_state = torch.cat(h_list, dim=1)  # [L, E, H]
+            self.rnn_state = detach_hidden(self.rnn_state)
+
+        # --- Episodenabschluss / Logging ---
         self.state = new_state
         for env_i in range(num_envs):
             self.total_rewards[env_i] += reward[env_i]
             self.episode_steps[env_i] += 1
 
+        for env_i in range(num_envs):
             if is_done[env_i]:
                 ep = self.env_episode_counter[env_i]
                 shaped = self.total_rewards[env_i]
-
                 steps = self.episode_steps[env_i]
                 raw_stats = infos[env_i].get("microrts_stats", {})
+
                 episode_info = {
                     "env": env_i,
                     "episode": ep,
@@ -702,13 +889,13 @@ class Agent:
                     "steps": steps,
                     "epsilon": epsilon
                 }
-
-                # Nur rohe Rewards ohne 'discounted'
                 for k in ["WinLoss", "ResourceGather", "ProduceWorker", "ProduceBuilding", "Attack",
                           "ProduceCombatUnit"]:
                     episode_info[k] = raw_stats.get(f"{k}RewardFunction", 0.0)
 
                 episode_results.append(episode_info)
+
+                # Reset für nächste Episode
                 self.env_episode_counter[env_i] += 1
                 self.total_rewards[env_i] = 0.0
                 self.episode_steps[env_i] = 0
