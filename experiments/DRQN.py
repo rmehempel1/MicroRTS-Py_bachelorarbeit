@@ -208,7 +208,7 @@ class UASDRQN(nn.Module):
         # --- CNN-Feature-Extraktion ---
         x = x.view(B * T, C, H, W)  # [B*T, C, H, W]
         feat = self.encoder(x)  # [B*T, F]
-        feat = feat.view(B, T, -1)  # [B, T, F]
+        feat = feat.reshape(B, T, -1)  # [B, T, F]
 
         # --- Positional Encoding nur für letzten Frame ---
         norm_x = unit_pos[:, 0].float() / (self.input_width - 1)
@@ -242,34 +242,32 @@ class UASDRQN(nn.Module):
 
 
 class ReplayBuffer:
-    def __init__(self, capacity, state_shape, action_shape, seq_len):
+    def __init__(self, capacity, state_shape, action_shape, seq_len=1):
         self.buffer = deque(maxlen=capacity)
-        self.state_shape = state_shape    # z.B. (C, H, W)
-        self.action_shape = action_shape  # z.B. (action_dim,)
+        self.state_shape = state_shape
+        self.action_shape = action_shape
         self.seq_len = seq_len
 
-    def append(self, states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks):
-        """
-        Speichert eine Sequenz von Länge T = self.seq_len.
-        Erwartete Shapes:
-            states:           [T, C, H, W]
-            actions:          [T, *action_shape]
-            rewards:          [T]
-            dones:            [T]
-            next_states:      [T, C, H, W]
-            unit_positions:   [T, 2]
-            action_masks:     [T, ...]
-            next_action_masks:[T, ...]
-        """
+    def _to_numpy(self, x):
+        """Konvertiert Tensoren (CUDA/CPU) oder Listen zu NumPy."""
+        if torch.is_tensor(x):
+            return x.detach().cpu().numpy()
+        elif isinstance(x, (list, tuple)):
+            # Rekursiv auf alle Elemente anwenden und stacken
+            return np.array([self._to_numpy(el) for el in x], copy=False)
+        else:
+            return np.array(x, copy=False)
+
+    def append(self, state, action, reward, done, next_state, unit_pos, action_masks, next_action_masks):
         self.buffer.append((
-            np.array(states, copy=False),
-            np.array(actions, copy=False),
-            np.array(rewards, copy=False),
-            np.array(dones, copy=False),
-            np.array(next_states, copy=False),
-            np.array(unit_positions, copy=False),
-            np.array(action_masks, copy=False),
-            np.array(next_action_masks, copy=False)
+            self._to_numpy(state),
+            self._to_numpy(action),
+            self._to_numpy(reward),
+            self._to_numpy(done),
+            self._to_numpy(next_state),
+            self._to_numpy(unit_pos),
+            self._to_numpy(action_masks),
+            self._to_numpy(next_action_masks)
         ))
 
     def __len__(self):
@@ -281,18 +279,17 @@ class ReplayBuffer:
 
         states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks = zip(*samples)
 
-        states = np.stack(states)             # [B, T, C, H, W]
-        actions = np.stack(actions)           # [B, T, *action_shape]
-        rewards = np.stack(rewards)           # [B, T]
-        dones = np.stack(dones)               # [B, T]
-        next_states = np.stack(next_states)   # [B, T, C, H, W]
-        unit_positions = np.stack(unit_positions)  # [B, T, 2]
-        action_masks = np.stack(action_masks)       # [B, T, ...]
-        next_action_masks = np.stack(next_action_masks)  # [B, T, ...]
-
-        return (states, actions, rewards, dones,
-                next_states, unit_positions,
-                action_masks, next_action_masks)
+        # Direkt NumPy-Arrays zurückgeben
+        return (
+            np.array(states, copy=False),
+            np.array(actions, copy=False),
+            np.array(rewards, copy=False),
+            np.array(dones, copy=False),
+            np.array(next_states, copy=False),
+            np.array(unit_positions, copy=False),
+            np.array(action_masks, copy=False),
+            np.array(next_action_masks, copy=False)
+        )
 
 class Agent:
     def __init__(self, env, exp_buffer, net, device="cpu"):
@@ -424,7 +421,9 @@ class Agent:
         device = self.device
         episode_results = []
 
-        # Temporäre Speicher pro Env initialisieren, falls nicht vorhanden
+        seq_len = self.exp_buffer.seq_len
+
+        # Temporäre Speicher pro Env initialisieren
         if not hasattr(self, "seq_buffers"):
             self.seq_buffers = [[] for _ in range(self.env.num_envs)]
 
@@ -434,10 +433,8 @@ class Agent:
         num_envs = self.env.num_envs
 
         full_action = np.zeros((num_envs, h, w, 7), dtype=np.int32)
-        state_v = torch.tensor(self.state.transpose(0, 3, 1, 2),
-                               dtype=torch.float32, device=device)
 
-        # Einheiten auswählen
+        # Welche Einheiten sind aktiv?
         units_mask_np = (self.state[..., 11] == 1) & (self.state[..., 21] == 1)
         units_mask = torch.from_numpy(units_mask_np).to(device=device)
         env_idx, i_idx, j_idx = torch.where(units_mask)
@@ -450,33 +447,53 @@ class Agent:
                 for e, f in zip(env_idx, flat_idx)
             ], dim=0).to(device=device)
 
-            rand_rows = (torch.rand(K, device=device) < epsilon)
-            probs89 = cell_masks_89.float()
-            row_sum = probs89.sum(dim=1, keepdim=True)
-            zero_rows = (row_sum.squeeze(1) == 0)
-            if zero_rows.any():
-                probs89[zero_rows, 0] = 1.0
-                row_sum = probs89.sum(dim=1, keepdim=True)
-            probs89 = probs89 / row_sum
-            rand_q = torch.multinomial(probs89, num_samples=1).squeeze(1)
-
-            batch_states = state_v[env_idx]
-            unit_pos = torch.stack([j_idx.float(), i_idx.float()], dim=1)
-
-            # Netz-Aufruf mit Sequenz-Länge 1 (Dummy-T)
-            q_vals = net(batch_states.unsqueeze(1), unit_pos=unit_pos)  # [K, 89]
-            masked_q = q_vals.masked_fill(~cell_masks_89, -1e9)
-            greedy_q = masked_q.argmax(dim=1)
-            q_choice = torch.where(rand_rows, rand_q, greedy_q)
+            q_choice_list = []
 
             for n in range(K):
                 e = int(env_idx[n].item())
                 ii = int(i_idx[n].item())
                 jj = int(j_idx[n].item())
-                q_idx = int(q_choice[n].item())
-                full_action[e, ii, jj] = self.qval_to_action(q_idx)
 
-        # Schritt ausführen
+                # === Sequenz aus seq_buffers holen ===
+                seq = self.seq_buffers[e][-seq_len:]
+                if len(seq) == 0:
+                    state_seq = [self.state[e]] * seq_len
+                else:
+                    state_seq = [frame[0] for frame in seq]
+                    if len(state_seq) < seq_len:
+                        state_seq = [state_seq[0]] * (seq_len - len(state_seq)) + state_seq
+
+                # [T, H, W, C] → [T, C, H, W]
+                state_seq_t = torch.tensor(np.array(state_seq), dtype=torch.float32, device=device).permute(0, 3, 1, 2)
+
+                # Unit-Position (nur letzter Step)
+                unit_pos_t = torch.tensor([jj, ii], dtype=torch.float32, device=device).unsqueeze(0)
+
+                # Netzaufruf
+                q_vals, _ = net(state_seq_t.unsqueeze(0), unit_pos=unit_pos_t)
+                q_vals = q_vals.squeeze(0)
+
+                # Maskieren
+                masked_q = q_vals.masked_fill(~cell_masks_89[n], -1e9)
+
+                # ε-greedy
+                if torch.rand(1, device=device) < epsilon:
+                    valid_actions = torch.nonzero(cell_masks_89[n], as_tuple=False).squeeze(1)
+                    if len(valid_actions) == 0:
+                        # Fallback: einfach Aktion 0 wählen
+                        action_idx = 0
+                    else:
+                        action_idx = valid_actions[torch.randint(len(valid_actions), (1,))].item()
+                else:
+                    if cell_masks_89[n].sum() == 0:
+                        action_idx = 0
+                    else:
+                        action_idx = masked_q.argmax().item()
+
+                q_choice_list.append(action_idx)
+                full_action[e, ii, jj] = self.qval_to_action(action_idx)
+
+        # Schritt in der Umgebung
         prev_state = self.state.copy()
         new_state, reward, is_done, infos = self.env.step(full_action.reshape(self.env.num_envs, -1))
         next_raw_masks = self.env.venv.venv.get_action_mask()
@@ -494,21 +511,21 @@ class Agent:
 
                 # Schritt-Daten ins temporäre Seq-Buffer
                 self.seq_buffers[env_i].append((
-                    prev_state[env_i],  # s_t (H,W,C)
+                    prev_state[env_i],  # s_t
                     single_action,  # a_t
                     reward[env_i],  # r
                     is_done[env_i],  # done
                     new_state[env_i],  # s_{t+1}
-                    (jj, ii),  # unit_pos (x, y)
-                    action_mask,  # mask s_t
-                    next_action_mask  # mask s_{t+1}
+                    (jj, ii),  # unit_pos
+                    action_mask,
+                    next_action_mask
                 ))
 
-                # Wenn genug Steps für Sequenz => in Replay speichern
-                if len(self.seq_buffers[env_i]) >= self.exp_buffer.seq_len:
-                    seq = self.seq_buffers[env_i][-self.exp_buffer.seq_len:]
+                # Wenn genug Steps => in Replay speichern
+                if len(self.seq_buffers[env_i]) >= seq_len:
+                    seq_data = self.seq_buffers[env_i][-seq_len:]
                     states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks = zip(
-                        *seq)
+                        *seq_data)
                     self.exp_buffer.append(states, actions, rewards, dones,
                                            next_states, unit_positions,
                                            action_masks, next_action_masks)
@@ -545,8 +562,8 @@ class Agent:
 
         # --- Tensor-Vorbereitung ---
         # States: [B, T, C, H, W]
-        states_v = torch.tensor(states, dtype=torch.float32, device=device)  # [B, T, C, H, W]
-        next_states_v = torch.tensor(next_states, dtype=torch.float32, device=device)  # [B, T, C, H, W]
+        states_v = torch.tensor(states, dtype=torch.float32, device=device).permute(0, 1, 4, 2, 3)
+        next_states_v = torch.tensor(next_states, dtype=torch.float32, device=device).permute(0, 1, 4, 2, 3)
         actions_v = torch.tensor(actions, dtype=torch.int64, device=device)  # [B, T]
         rewards_v = torch.tensor(rewards, dtype=torch.float32, device=device)  # [B, T]
         done_mask = torch.tensor(dones, dtype=torch.bool, device=device)  # [B, T]
@@ -683,7 +700,7 @@ if __name__ == "__main__":
     policy_net = UASDRQN(input_shape=dummy_input_shape).to(device)
     target_net = UASDRQN(input_shape=dummy_input_shape).to(device)
     target_net.load_state_dict(policy_net.state_dict())
-    target_net.eval()
+
 
     optimizer = torch.optim.Adam(policy_net.parameters(), lr=args.learning_rate)
 
@@ -715,7 +732,7 @@ if __name__ == "__main__":
     print("Learning Rate:", args.learning_rate)
 
     target_net.load_state_dict(policy_net.state_dict())
-    target_net.eval()
+
     torch.save(policy_net.state_dict(), f"./{args.exp_name}/{args.exp_name}_initial.pth")
 
     # Training
