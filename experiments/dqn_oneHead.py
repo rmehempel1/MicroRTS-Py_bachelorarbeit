@@ -380,106 +380,116 @@ class Agent:
         net = self.net
         device = self.device
         episode_results = []
-        raw_masks_np = self.env.venv.venv.get_action_mask()
-        raw_masks = torch.from_numpy(raw_masks_np).to(device=device).bool() # [num_envs, H*W, 78]
+
+        # --- Masken & Shapes aus aktuellem Zustand ---
+        raw_masks_np = self.env.venv.venv.get_action_mask()  # [num_envs, H*W, 78] (np)
+        raw_masks = torch.from_numpy(raw_masks_np).to(device=device).bool()  # -> torch.bool
         _, h, w, _ = self.state.shape
         num_envs = self.env.num_envs
 
-
+        # --- Aktionsarray & State-Tensor ---
         full_action = np.zeros((num_envs, h, w, 7), dtype=np.int32)
+        # state_v: [E, C, H, W]
         state_v = torch.tensor(self.state.transpose(0, 3, 1, 2), dtype=torch.float32, device=device)
 
-        def sample_valid(mask):
-            """ Gibt einen zufällig ausgewählten Index zurück, bei dem die Eingabemaske True ist."""
-            idx = torch.where(mask)[0]
-            return idx[torch.randint(len(idx), (1,))] if len(idx) > 0 else torch.tensor(0, device=device)
+        # === Vektorisiert: wählbare Units finden (lebend & befehlsfähig) ===
+        # Bedingung exakt wie zuvor (Feature-Kanäle 11 und 21 == 1)
+        units_mask_np = (self.state[..., 11] == 1) & (self.state[..., 21] == 1)  # [E,H,W] (np.bool_)
+        units_mask = torch.from_numpy(units_mask_np).to(device=device)  # torch.bool [E,H,W]
 
-        for env_i in range(num_envs):
-            for i in range(h):
-                for j in range(w):
-                    if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
-                        flat_idx = i * w + j                                                                            # wird hierndie richtige Zelle ausgewählt, stimmt der Flat:index?
-                        cell_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat_idx])
-                        # --- Aktionsauswahl ---
-                        if np.random.random() < epsilon:
-                            #Originale Maske für die gültigen Action Types
-                            a_type = sample_valid(raw_masks[env_i, flat_idx][0:6]).item()
-                            full_action[env_i, i, j, 0] = a_type
-                            #Mit konvertierter Maske
-                            if a_type == 1:
-                                single_action= sample_valid(cell_mask[0:4]).item()
-                            elif a_type == 2:
-                                single_action = sample_valid(cell_mask[4:8]).item()
-                            elif a_type == 3:
-                                single_action = sample_valid(cell_mask[8:12]).item()
-                            elif a_type == 4:
-                                single_action = sample_valid(cell_mask[12:40]).item()
-                            elif a_type == 5:
-                                single_action = sample_valid(cell_mask[40:89]).item()
-                            else:
-                                single_action = sample_valid(cell_mask).item()
-                            full_action[env_i, i, j]=self.qval_to_action(single_action)
+        env_idx, i_idx, j_idx = torch.where(units_mask)  # je 1D-Tensor der Länge K
+        K = env_idx.numel()  # Anzahl der True in units_mask
+        """
+        idx sind jetzt Tensoren!!!
+        """
+        if K > 0:
+            # --- Flat-Indizes in der 78er-/89er-Masken-Arrays ---
+            flat_idx = i_idx * w + j_idx
 
+            # --- 89er-Masken pro Unit bauen (ggf. per List-Comprehension) ---
+            cell_masks_89 = torch.stack([
+                self.convert_78_to_89_mask(raw_masks[e.item(), f.item()])
+                for e, f in zip(env_idx, flat_idx)
+            ], dim=0).to(device=device)  # [K, 89], bool
 
-                        else:
+            # --- ε-greedy Auswahl ---
+            # Bernoulli-Maske für Zufall vs. Greedy
+            rand_rows = (torch.rand(K, device=device) < epsilon)   #True/False Maske für Greedy
 
-                            # Eingabe vorbereiten für genau eine Unit:
-                            state_v_single = state_v[env_i:env_i + 1]  # Form: [1, C, H, W]
-                            unit_pos = torch.tensor([[j, i]], dtype=torch.float32, device=device)  # Form: [1, 2]
+            # (A) Zufall: uniform über gültige 89er-Aktionen pro Zeile
+            probs89 = cell_masks_89.float()  # [K,89]
+            row_sum = probs89.sum(dim=1, keepdim=True)  # [K,1]
+            # Fallback, falls eine Zeile keine True-Werte hat: gebe Aktion 0 frei
+            zero_rows = (row_sum.squeeze(1) == 0)
+            if zero_rows.any():
+                probs89[zero_rows, 0] = 1.0
+                row_sum = probs89.sum(dim=1, keepdim=True)
+            probs89 = probs89 / row_sum
+            rand_q = torch.multinomial(probs89, num_samples=1).squeeze(1)  # [K]
 
-                            # Netz aufrufen
-                            q_vals_v = net(state_v_single, unit_pos=unit_pos)[0]  # jetzt Shape: [89]
+            # (B) Greedy: Q-Werte vom Netz + Maskierung
+            # Batch-Zustände und Positionen für alle K Units
+            batch_states = state_v[env_idx]  # [K, C, H, W]
+            unit_pos = torch.stack([j_idx.float(), i_idx.float()], dim=1)  # [K, 2] (x=j, y=i)
 
-                            # Maskierung anwenden
-                            masked_q_vals = q_vals_v.masked_fill(~cell_mask, -1e9)
+            q_vals = net(batch_states, unit_pos=unit_pos)  # [K, 89]
+            masked_q = q_vals.masked_fill(~cell_masks_89, -1e9)  # ungültige -> -inf
+            greedy_q = masked_q.argmax(dim=1)  # [K]
 
-                            # Beste gültige Aktion auswählen
-                            q_val = torch.argmax(masked_q_vals).item()
+            # Endgültige Q-Indices (ε-greedy)
+            q_choice = torch.where(rand_rows, rand_q, greedy_q)  # [K]
 
-                            # Umwandlung in Aktionsarray
-                            full_action[env_i, i, j] = self.qval_to_action(q_val)
+            # --- Q-Index -> MicroRTS-Action[7] und ins full_action eintragen ---
+            # qval_to_action arbeitet vermutlich nicht vektorisiert -> kurzer Loop über K
+            for n in range(K):
+                e = int(env_idx[n].item())
+                ii = int(i_idx[n].item())
+                jj = int(j_idx[n].item())
+                q_idx = int(q_choice[n].item())
+                full_action[e, ii, jj] = self.qval_to_action(q_idx)
 
-
-        # --- Schritt ausführen ---
+        # === Schritt in der Umgebung ===
         prev_state = self.state.copy()
         new_state, reward, is_done, infos = self.env.step(full_action.reshape(self.env.num_envs, -1))
-        #envs.venv.venv.render(mode="human")
-        next_raw_masks = self.env.venv.venv.get_action_mask()
+        next_raw_masks = self.env.venv.venv.get_action_mask()  # [num_envs, H*W, 78] (np)
 
-        # --- Replay Buffer befüllen ---
+        # === Replay + Episodenabschluss in EINER env-Schleife ===
+        self.state = new_state  # Zustand aktualisieren (wichtig vor Countern)
+
         for env_i in range(num_envs):
-            for i in range(h):
-                for j in range(w):
-                    if self.state[env_i, i, j, 11] == 1 and self.state[env_i, i, j, 21] == 1:
-                        flat_idx = i * h + j
-                        action_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat_idx])
-                        next_action_mask = self.convert_78_to_89_mask(next_raw_masks[env_i, flat_idx])
-                        single_action = np.array(full_action[env_i, i, j], dtype=np.int64)
-                        single_action = self.action_to_qval(single_action)
+            # --- Replay Buffer befüllen (alle aktiven Zellen in diesem env) ---
+            # Wir verwenden den Zustand vor der Aktion (prev_state) für s_t & Masken
+            active_i, active_j = torch.where(units_mask[env_i])  # [K_env], [K_env]
+            for ii, jj in zip(active_i.tolist(), active_j.tolist()):
+                flat = ii * w + jj  # ✅ konsistent
+                action_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat])  # torch.bool[89]
+                next_action_mask = self.convert_78_to_89_mask(next_raw_masks[env_i, flat])  # np -> impl. akzeptiert
 
-                        self.exp_buffer.append(
-                            prev_state[env_i],
-                            single_action,
-                            reward[env_i],
-                            is_done[env_i],
-                            new_state[env_i],
-                            (j, i),
-                            action_mask,
-                            next_action_mask
-                        )
+                # Gewählte Aktion -> Q-Index
+                single_action = np.array(full_action[env_i, ii, jj], dtype=np.int64)
+                single_action = self.action_to_qval(single_action)
 
-        # --- Episodenabschluss ---
-        self.state = new_state
-        for env_i in range(num_envs):
+                self.exp_buffer.append(
+                    prev_state[env_i],  # s_t
+                    single_action,  # a_t (Q-Index)
+                    reward[env_i],  # r_{t+1}
+                    is_done[env_i],  # done
+                    new_state[env_i],  # s_{t+1}
+                    (jj, ii),  # (x=j, y=i)
+                    action_mask,  # gültige in s_t
+                    next_action_mask  # gültige in s_{t+1}
+                )
+
+            # --- Episodenabschluss / Statistiken ---
             self.total_rewards[env_i] += reward[env_i]
             self.episode_steps[env_i] += 1
 
             if is_done[env_i]:
                 ep = self.env_episode_counter[env_i]
                 shaped = self.total_rewards[env_i]
-
                 steps = self.episode_steps[env_i]
                 raw_stats = infos[env_i].get("microrts_stats", {})
+
                 episode_info = {
                     "env": env_i,
                     "episode": ep,
@@ -487,13 +497,13 @@ class Agent:
                     "steps": steps,
                     "epsilon": epsilon
                 }
-
-                # Nur rohe Rewards ohne 'discounted'
                 for k in ["WinLoss", "ResourceGather", "ProduceWorker", "ProduceBuilding", "Attack",
                           "ProduceCombatUnit"]:
                     episode_info[k] = raw_stats.get(f"{k}RewardFunction", 0.0)
 
                 episode_results.append(episode_info)
+
+                # Reset für nächste Episode dieses env
                 self.env_episode_counter[env_i] += 1
                 self.total_rewards[env_i] = 0.0
                 self.episode_steps[env_i] = 0
@@ -508,12 +518,12 @@ class Agent:
         # --- Tensor-Vorbereitung ---
         states_v = torch.tensor(states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
         next_states_v = torch.tensor(next_states, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
-        actions_v = torch.tensor(actions, dtype=torch.int64, device=device)  # jetzt [B]
-        rewards_v = torch.tensor(rewards, dtype=torch.float32, device=device)
-        done_mask = torch.tensor(dones, dtype=torch.bool, device=device)
-        unit_pos = torch.tensor(unit_positions, dtype=torch.long, device=device)
+        actions_v = torch.tensor(actions, dtype=torch.int64, device=device)  # [B]
+        rewards_v = torch.tensor(rewards, dtype=torch.float32, device=device)  # [B]
+        done_mask = torch.tensor(dones, dtype=torch.bool, device=device)  # [B]
+        unit_pos = torch.tensor(unit_positions, dtype=torch.long, device=device)  # [B, 2]
 
-        # --- Q(s, a) und Q(s', ·) berechnen ---
+        # --- Q(s, a) und Q(s', ·) ---
         qvals = self.net(states_v, unit_pos=unit_pos)  # [B, 89]
         qvals_next = tgt_net(next_states_v, unit_pos=unit_pos)  # [B, 89]
 
@@ -521,20 +531,29 @@ class Agent:
         state_action_qvals = qvals[torch.arange(B), actions_v]  # [B]
 
         # --- Zielwerte berechnen ---
-        target_qvals = torch.zeros(B, dtype=torch.float32, device=device)
-        for b in range(B):
-            if next_action_masks is not None:
-                next_mask_89 = next_action_masks[b].to(dtype=torch.bool, device=device)
-                if next_mask_89.any():
-                    max_q = qvals_next[b][next_mask_89].max()
-                else:
-                    max_q = torch.tensor(0.0, device=device)
-            else:
-                max_q = qvals_next[b].max()
+        if next_action_masks is not None:
+            # In Torch-Tensor umwandeln
+            next_masks_v = torch.stack(
+                [m.to(dtype=torch.bool, device=device) for m in next_action_masks]
+            )  # [B, 89] bool
 
-            target_qvals[b] = rewards_v[b] if done_mask[b] else rewards_v[b] + gamma * max_q
+            # Ungültige Aktionen maskieren mit -inf
+            masked_qvals_next = qvals_next.masked_fill(~next_masks_v, float('-inf'))
 
-        # --- Loss berechnen ---
+            # Falls eine Zeile nur -inf hat → max soll 0.0 werden
+            max_qvals_next, _ = masked_qvals_next.max(dim=1)
+            max_qvals_next[torch.isinf(max_qvals_next)] = 0.0
+        else:
+            max_qvals_next, _ = qvals_next.max(dim=1)  # [B]
+
+        # --- Vektorisiertes Ziel Q ---
+        target_qvals = torch.where(
+            done_mask,
+            rewards_v,
+            rewards_v + gamma * max_qvals_next
+        )
+
+        # --- Loss ---
         loss = F.smooth_l1_loss(state_action_qvals, target_qvals)
         return loss
 
