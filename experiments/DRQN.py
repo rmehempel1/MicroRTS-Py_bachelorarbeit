@@ -576,11 +576,11 @@ class Agent:
             if len(self.unit_seq_buffers[key]) >= seq_len:
                 seq = list(self.unit_seq_buffers[key])[-seq_len:]
                 (states, actions, rewards_, dones, next_states,
-                 unit_positions, action_masks, next_action_masks) = zip(*seq)
+                 unit_positions, action_masks, next_action_masks, global_step) = zip(*seq)
 
                 self.exp_buffer.append(states, actions, rewards_, dones,
                                        next_states, unit_positions,
-                                       action_masks, next_action_masks)
+                                       action_masks, next_action_masks, global_step)
 
         # 6) Episode-Ende / Logging / Aufräumen
 
