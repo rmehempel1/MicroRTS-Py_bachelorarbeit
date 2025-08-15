@@ -111,6 +111,10 @@ def parse_args():
                         help="Größe des speichers für den Replay Buffer")
     parser.add_argument("--save-network", type=int, default=300_000,
                         help="Wie häufig das Netz gespeichert werden soll")
+    parser.add_argument('--sequence_length', type=int, default=4,
+                        help='Sequenzlänge Rekkurenten Netz, bei 1 kein RNN')
+    parser.add_argument('--eval_interval', type=int, default=50_000,
+                        help='Wie häufig evaluiert wird')
 
     args = parser.parse_args()
     if not args.seed:
@@ -258,16 +262,22 @@ class ReplayBuffer:
         else:
             return np.array(x, copy=False)
 
-    def append(self, state, action, reward, done, next_state, unit_pos, action_masks, next_action_masks):
+    def append(self, state, action, reward, done, next_state, unit_pos, action_masks, next_action_masks, global_step):
         self.buffer.append((
-            self._to_numpy(state),
-            self._to_numpy(action),
-            self._to_numpy(reward),
-            self._to_numpy(done),
-            self._to_numpy(next_state),
-            self._to_numpy(unit_pos),
+            self._to_numpy(state),              #[Seq_len, H, W, C]
+            self._to_numpy(action),             #[Seq_len] (0-88)
+            self._to_numpy(reward),             #[Seq_len] Reward des Environments pro Step
+            self._to_numpy(done),               #[Seq_len] Bool
+            self._to_numpy(next_state),         #[Seq_len, H, W, C]
+            self._to_numpy(unit_pos),           #[Seq_len,2]
+            """
+            Es wird zwar bei jedem State die aktuelle unit_pos gespeichert, allerdings wird nicht die Zugehörigkeit 
+            getrackt und deshalb nur die letzte Unit_pos im Net verwendet
+            """,
             self._to_numpy(action_masks),
-            self._to_numpy(next_action_masks)
+            self._to_numpy(next_action_masks),
+            self._to_numpy(global_step)
+
         ))
 
     def __len__(self):
@@ -277,7 +287,7 @@ class ReplayBuffer:
         indices = np.random.choice(len(self.buffer), batch_size, replace=False)
         samples = [self.buffer[idx] for idx in indices]
 
-        states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks = zip(*samples)
+        states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks, global_step = zip(*samples)
 
         # Direkt NumPy-Arrays zurückgeben
         return (
@@ -288,7 +298,8 @@ class ReplayBuffer:
             np.array(next_states, copy=False),
             np.array(unit_positions, copy=False),
             np.array(action_masks, copy=False),
-            np.array(next_action_masks, copy=False)
+            np.array(next_action_masks, copy=False),
+            np.array(global_step, copy=False)
         )
 
 class Agent:
@@ -417,6 +428,14 @@ class Agent:
         return m89
 
     def play_step(self, epsilon=0.0):
+        """
+        1) Aktuellen State in Sequenz aus Buffer ergänzen
+        2) Aktionsmasken holen und auswählbare Einheiten bestimmen
+        3) Aktionen für alle auswählbaren Units mit e-greedy und dem Net bestimmen
+        4) Aktion durchführen
+        5) Transition + Aktionsmasken des aktuellen und folgenden Step (für den calc Loss) speichern
+        6) Reward und Schritt zählen bei Episodenende loggen
+        """
         net = self.net
         device = self.device
         episode_results = []
@@ -424,6 +443,9 @@ class Agent:
         num_envs = self.env.num_envs
         _, h, w, _ = self.state.shape
         seq_len = getattr(self.exp_buffer, "seq_len", 8)
+
+        if not hasattr(self, "global_step"):
+            self.global_step = 0
 
         # --- Historienpuffer initialisieren ---
         if not hasattr(self, "seq_buffers"):
@@ -436,18 +458,36 @@ class Agent:
 
         # 1) Aktuellen State s_t in die Entscheidungs-Historie legen (für RNN-Input)
         for env_i in range(num_envs):
-            self.seq_buffers[env_i].append((self.state[env_i].copy(),))  # nur State an Pos 0
+            self.seq_buffers[env_i].append((self.global_step, self.state[env_i].copy()))  #speichert den global Step mit dem State
 
         # 2) Aktionsmasken + aktive Einheiten bestimmen
         raw_masks_np = self.env.venv.venv.get_action_mask()  # [E, H*W, 78]
         raw_masks = torch.from_numpy(raw_masks_np).to(device=device).bool()
         units_mask_np = (self.state[..., 11] == 1) & (self.state[..., 21] == 1)  # [E,H,W]
         units_mask = torch.from_numpy(units_mask_np).to(device=device)
-        env_idx, i_idx, j_idx = torch.where(units_mask)
+        env_idx, i_idx, j_idx = torch.where(units_mask) #Jede auswählbare Unit erhält für Enviroment und die x-,y-Koordinate einen Index
         K = env_idx.numel()
 
         full_action = np.zeros((num_envs, h, w, 7), dtype=np.int32)
 
+        # 3.1) --- Sequenz aus seq_buffers[e] holen & ggf. pad ---
+        state_seq = []
+        for i in range(seq_len):
+            step = self.global_step - (seq_len - 1 - i)  # t - seq_len + 1 bis t
+            found = False
+            for entry in reversed(self.exp_buffer.buffer):  # Buffer ist ein deque
+                entry_step = entry[-1]  # letzter Eintrag = global_step
+                if entry_step == step:
+                    state_seq.append(entry[0][-1])  # letzter State in [Seq_len, H, W, C]
+                    found = True
+                    break
+            if not found:
+                for j in range(num_envs):
+                # Padding: Wenn nichts gefunden, mit aktuellem Zustand füllen
+                    if state_seq:
+                        state_seq.insert(0, state_seq[j])
+                    else:
+                        state_seq.append(self.state[j])
         # 3) Aktion wählen (ε-greedy) – Sequenz [T,C,H,W] pro Unit ins Netz
         if K > 0:
             flat_idx = i_idx * w + j_idx
@@ -457,45 +497,52 @@ class Agent:
             ], dim=0).to(device=device)  # [K,89] bool
 
             for n in range(K):
+                """
+                Iteration über alle auswählbaren Einheiten
+                1) vorherigen States holen
+                2) Position der Einheit ermitteln -> Positional Encoding
+                3) Logits aus dem Netz holen
+                4) Invalide Aktionen maskieren
+                5) Auswahl treffen mit Greedy oder explore
+                6) Unit_action speichern in Full_action
+                """
                 e = int(env_idx[n].item())
                 ii = int(i_idx[n].item())
                 jj = int(j_idx[n].item())
 
-                # --- Sequenz aus seq_buffers[e] holen & ggf. pad ---
-                seq = self.seq_buffers[e][-seq_len:]  # Elemente sind Tuples: (state,)
-                if len(seq) == 0:
-                    state_seq = [self.state[e]] * seq_len
-                else:
-                    state_seq = [frame[0] for frame in seq]  # nur States ziehen
-                    if len(state_seq) < seq_len:
-                        state_seq = [state_seq[0]] * (seq_len - len(state_seq)) + state_seq
+
+
 
                 # [T,H,W,C] -> [T,C,H,W]
                 state_seq_t = torch.tensor(np.array(state_seq), dtype=torch.float32, device=device).permute(0, 3, 1, 2)
 
-                # Positionsencoding (nur letzter Step)
+                # 3.2) Positionsencoding (nur letzter Step)
                 unit_pos_t = torch.tensor([jj, ii], dtype=torch.float32, device=device).unsqueeze(0)  # [1,2]
 
-                # Netzaufruf: [B=1,T,C,H,W] -> Q[last]
+                # 3)Netzaufruf: [B=1,T,C,H,W] -> Q[last]
                 q_vals, _ = net(state_seq_t.unsqueeze(0), unit_pos=unit_pos_t)  # [1,89]
                 q_vals = q_vals.squeeze(0)  # [89]
 
-                # Maskieren + ε-greedy
+                # 3.4) Maskieren
                 mask_89 = cell_masks_89[n]
                 if mask_89.sum() == 0:
                     action_idx = 0  # Fallback
                 else:
                     masked_q = q_vals.masked_fill(~mask_89, -1e9)
+                # 3.5) ε-greedy
                     if torch.rand(1, device=device) < epsilon:
                         valid = torch.nonzero(mask_89, as_tuple=False).squeeze(1)
                         action_idx = valid[torch.randint(len(valid), (1,), device=device)].item()
                     else:
                         action_idx = masked_q.argmax().item()
-
+                # 3.6) speichern
                 full_action[e, ii, jj] = self.qval_to_action(action_idx)
 
         # 4) Schritt ausführen
         prev_state = self.state.copy()
+        for env_i in range(num_envs):
+            self.seq_buffers[env_i].append((self.global_step, prev_state[env_i].copy()))
+
         new_state, reward, is_done, infos = self.env.step(full_action.reshape(num_envs, -1))
         next_raw_masks = self.env.venv.venv.get_action_mask()  # [E, H*W, 78]
         self.state = new_state  # s_{t+1}
@@ -524,7 +571,8 @@ class Agent:
                 new_state[e],  # s_{t+1}
                 (jj, ii),  # (x=j, y=i) für letzten Step
                 act_mask,  # gültige in s_t
-                next_act_mask  # gültige in s_{t+1}
+                next_act_mask,  # gültige in s_{t+1}
+                self.global_step
             ))
 
             if len(self.unit_seq_buffers[key]) >= seq_len:
@@ -537,6 +585,7 @@ class Agent:
                                        action_masks, next_action_masks)
 
         # 6) Episode-Ende / Logging / Aufräumen
+
         for env_i in range(num_envs):
             self.total_rewards[env_i] += reward[env_i]
             self.episode_steps[env_i] += 1
@@ -564,7 +613,7 @@ class Agent:
                 to_del = [k for k in list(self.unit_seq_buffers.keys()) if k[0] == env_i]
                 for k in to_del:
                     del self.unit_seq_buffers[k]
-
+        self.global_step += 1
         return {"done": False, "episode_stats": episode_results}
 
     def calc_loss(self, batch, tgt_net, gamma):
@@ -632,10 +681,9 @@ if __name__ == "__main__":
     args = parse_args()
 
     # NEU: Sequenzlänge als Parameter (falls nicht schon in parse_args vorhanden)
-    if not hasattr(args, "seq_len"):
-        args.seq_len = 8  # Defaultwert, kann in CLI überschrieben werden
+    seq_len=args.sequence_length
 
-    print(f"Save frequency: {args.save_frequency}, seq_len: {args.seq_len}")
+    print(f"Save frequency: {args.save_frequency}, seq_len: {seq_len}")
 
     experiment_name = f"{args.gym_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     if args.prod_mode:
@@ -702,12 +750,11 @@ if __name__ == "__main__":
     state_shape = dummy_obs.shape[1:]  # [H, W, C]
     action_shape = (7,)  # [H, W, 7] später
 
-    # NEU: ReplayBuffer mit Sequenzen
     expbuffer = ReplayBuffer(
         capacity=args.buffer_memory,
         state_shape=state_shape,
         action_shape=action_shape,
-        seq_len=args.seq_len
+        seq_len=seq_len
     )
 
     # Dummy-Eingabe für Netz (C,H,W)
@@ -807,7 +854,13 @@ if __name__ == "__main__":
             for k, v in policy_net.state_dict().items():
                 total_diff += (v - initial_sd[k]).abs().sum().item()
             if frame_idx % 10000 == 0:
-                print(f"[dbg] Param-Δ L1 seit Start: {total_diff:.4f}")
+                print(f"[dbg] Param-Lambda L1 seit Start: {total_diff:.4f}")
+        # Evaluierung
+        """
+        if frame_idx % args.eval_interval==0:
+            policy_net.eval()
+            target_net.eval()
+        """
 
     # Training fertig – final speichern
     torch.save(policy_net.state_dict(), f"./{args.exp_name}/{args.exp_name}_final.pth")
