@@ -712,8 +712,7 @@ if __name__ == "__main__":
     policy_net = UASDRQN(input_shape=dummy_input_shape).to(device)
     target_net = UASDRQN(input_shape=dummy_input_shape).to(device)
     target_net.load_state_dict(policy_net.state_dict())
-    policy_net.train()
-    target_net.eval()
+
 
     optimizer = torch.optim.Adam(policy_net.parameters(), lr=args.learning_rate)
 
@@ -792,6 +791,8 @@ if __name__ == "__main__":
             print(f"Checkpoint gespeichert: {save_path}")
 
         # Training-Schritt
+        policy_net.train()
+        target_net.eval()
         batch = expbuffer.sample(args.batch_size)
         optimizer.zero_grad()
         loss = agent.calc_loss(batch, target_net, gamma=args.gamma)
