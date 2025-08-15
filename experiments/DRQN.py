@@ -476,7 +476,7 @@ class Agent:
             step = self.global_step - (seq_len - 1 - i)  # t - seq_len + 1 bis t
             found = False
             for entry in reversed(self.exp_buffer.buffer):  # Buffer ist ein deque
-                entry_step = entry[-1]  # letzter Eintrag = global_step
+                entry_step = entry[-1][-1]  # letzter Eintrag = global_step
                 if entry_step == step:
                     state_seq.append(entry[0][-1])  # letzter State in [Seq_len, H, W, C]
                     found = True
