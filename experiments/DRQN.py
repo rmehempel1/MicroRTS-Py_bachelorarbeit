@@ -470,7 +470,7 @@ class Agent:
 
         full_action = np.zeros((num_envs, h, w, 7), dtype=np.int32)
 
-        # 3.1) --- Sequenz aus seq_buffers[e] holen & ggf. pad ---
+        # 3.1) --- Sequenz aus Replay Buffer (self.exp_buffer) holen & ggf. pad ---
         state_seq = []
         for i in range(seq_len):
             step = self.global_step - (seq_len - 1 - i)  # t - seq_len + 1 bis t
@@ -482,12 +482,10 @@ class Agent:
                     found = True
                     break
             if not found:
-                for j in range(num_envs):
-                # Padding: Wenn nichts gefunden, mit aktuellem Zustand füllen
-                    if state_seq:
-                        state_seq.insert(0, state_seq[j])
-                    else:
-                        state_seq.append(self.state[j])
+                if len(state_seq) > 0:
+                    state_seq.insert(0, state_seq[0])  # Mit erstem bekannten State auffüllen
+                else:
+                    state_seq.append(self.state[0])  # ganz am Anfang – akt. Zustand
         # 3) Aktion wählen (ε-greedy) – Sequenz [T,C,H,W] pro Unit ins Netz
         if K > 0:
             flat_idx = i_idx * w + j_idx
