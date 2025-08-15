@@ -270,10 +270,6 @@ class ReplayBuffer:
             self._to_numpy(done),               #[Seq_len] Bool
             self._to_numpy(next_state),         #[Seq_len, H, W, C]
             self._to_numpy(unit_pos),           #[Seq_len,2]
-            """
-            Es wird zwar bei jedem State die aktuelle unit_pos gespeichert, allerdings wird nicht die Zugehörigkeit 
-            getrackt und deshalb nur die letzte Unit_pos im Net verwendet
-            """,
             self._to_numpy(action_masks),
             self._to_numpy(next_action_masks),
             self._to_numpy(global_step)
@@ -617,7 +613,7 @@ class Agent:
     def calc_loss(self, batch, tgt_net, gamma):
         self.net.train()
         tgt_net.eval()
-        states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks = batch
+        states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks, global_step = batch
         device = self.device
         B, T = actions.shape[:2]
 
