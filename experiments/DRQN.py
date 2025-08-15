@@ -568,6 +568,8 @@ class Agent:
         return {"done": False, "episode_stats": episode_results}
 
     def calc_loss(self, batch, tgt_net, gamma):
+        self.net.train()
+        tgt_net.eval()
         states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks = batch
         device = self.device
         B, T = actions.shape[:2]
@@ -588,7 +590,8 @@ class Agent:
         # --- Q(s', ·) für nächste Sequenz ---
         #  hier einfach nur die Unit-Position aus dem letzten Schritt der Next-State-Sequenz.
         next_unit_pos_v = unit_pos_v.clone()  # falls du Positionsencoding nur für aktuellen Frame nutzt
-        qvals_next, _ = tgt_net(next_states_v, unit_pos=next_unit_pos_v)  # [B, action_dim]
+        with torch.no_grad():
+            qvals_next, _ = tgt_net(next_states_v, unit_pos=next_unit_pos_v)  # [B, action_dim]
 
         # --- Aktionen & Rewards nur für letzten Step ---
         last_actions = actions_v[:, -1]  # [B]
