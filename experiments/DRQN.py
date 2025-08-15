@@ -421,116 +421,123 @@ class Agent:
         device = self.device
         episode_results = []
 
-        seq_len = self.exp_buffer.seq_len
-
-        # Temporäre Speicher pro Env initialisieren
-        if not hasattr(self, "seq_buffers"):
-            self.seq_buffers = [[] for _ in range(self.env.num_envs)]
-
-        raw_masks_np = self.env.venv.venv.get_action_mask()
-        raw_masks = torch.from_numpy(raw_masks_np).to(device=device).bool()
-        _, h, w, _ = self.state.shape
         num_envs = self.env.num_envs
+        _, h, w, _ = self.state.shape
+        seq_len = getattr(self.exp_buffer, "seq_len", 8)
 
-        full_action = np.zeros((num_envs, h, w, 7), dtype=np.int32)
+        # --- Historienpuffer initialisieren ---
+        if not hasattr(self, "seq_buffers"):
+            # pro Env: Liste von States (nur s_t, ohne Actions etc.)
+            self.seq_buffers = [[] for _ in range(num_envs)]
+        if not hasattr(self, "unit_seq_buffers"):
+            # pro Unit (env,i,j): deque mit Transitions
+            from collections import defaultdict, deque
+            self.unit_seq_buffers = defaultdict(lambda: deque(maxlen=seq_len * 2))
 
-        # Welche Einheiten sind aktiv?
-        units_mask_np = (self.state[..., 11] == 1) & (self.state[..., 21] == 1)
+        # 1) Aktuellen State s_t in die Entscheidungs-Historie legen (für RNN-Input)
+        for env_i in range(num_envs):
+            self.seq_buffers[env_i].append((self.state[env_i].copy(),))  # nur State an Pos 0
+
+        # 2) Aktionsmasken + aktive Einheiten bestimmen
+        raw_masks_np = self.env.venv.venv.get_action_mask()  # [E, H*W, 78]
+        raw_masks = torch.from_numpy(raw_masks_np).to(device=device).bool()
+        units_mask_np = (self.state[..., 11] == 1) & (self.state[..., 21] == 1)  # [E,H,W]
         units_mask = torch.from_numpy(units_mask_np).to(device=device)
         env_idx, i_idx, j_idx = torch.where(units_mask)
         K = env_idx.numel()
 
+        full_action = np.zeros((num_envs, h, w, 7), dtype=np.int32)
+
+        # 3) Aktion wählen (ε-greedy) – Sequenz [T,C,H,W] pro Unit ins Netz
         if K > 0:
             flat_idx = i_idx * w + j_idx
             cell_masks_89 = torch.stack([
                 self.convert_78_to_89_mask(raw_masks[e.item(), f.item()])
                 for e, f in zip(env_idx, flat_idx)
-            ], dim=0).to(device=device)
-
-            q_choice_list = []
+            ], dim=0).to(device=device)  # [K,89] bool
 
             for n in range(K):
                 e = int(env_idx[n].item())
                 ii = int(i_idx[n].item())
                 jj = int(j_idx[n].item())
 
-                # === Sequenz aus seq_buffers holen ===
-                seq = self.seq_buffers[e][-seq_len:]
+                # --- Sequenz aus seq_buffers[e] holen & ggf. pad ---
+                seq = self.seq_buffers[e][-seq_len:]  # Elemente sind Tuples: (state,)
                 if len(seq) == 0:
                     state_seq = [self.state[e]] * seq_len
                 else:
-                    state_seq = [frame[0] for frame in seq]
+                    state_seq = [frame[0] for frame in seq]  # nur States ziehen
                     if len(state_seq) < seq_len:
                         state_seq = [state_seq[0]] * (seq_len - len(state_seq)) + state_seq
 
-                # [T, H, W, C] → [T, C, H, W]
+                # [T,H,W,C] -> [T,C,H,W]
                 state_seq_t = torch.tensor(np.array(state_seq), dtype=torch.float32, device=device).permute(0, 3, 1, 2)
 
-                # Unit-Position (nur letzter Step)
-                unit_pos_t = torch.tensor([jj, ii], dtype=torch.float32, device=device).unsqueeze(0)
+                # Positionsencoding (nur letzter Step)
+                unit_pos_t = torch.tensor([jj, ii], dtype=torch.float32, device=device).unsqueeze(0)  # [1,2]
 
-                # Netzaufruf
-                q_vals, _ = net(state_seq_t.unsqueeze(0), unit_pos=unit_pos_t)
-                q_vals = q_vals.squeeze(0)
+                # Netzaufruf: [B=1,T,C,H,W] -> Q[last]
+                q_vals, _ = net(state_seq_t.unsqueeze(0), unit_pos=unit_pos_t)  # [1,89]
+                q_vals = q_vals.squeeze(0)  # [89]
 
-                # Maskieren
-                masked_q = q_vals.masked_fill(~cell_masks_89[n], -1e9)
-
-                # ε-greedy
-                if torch.rand(1, device=device) < epsilon:
-                    valid_actions = torch.nonzero(cell_masks_89[n], as_tuple=False).squeeze(1)
-                    if len(valid_actions) == 0:
-                        # Fallback: einfach Aktion 0 wählen
-                        action_idx = 0
-                    else:
-                        action_idx = valid_actions[torch.randint(len(valid_actions), (1,))].item()
+                # Maskieren + ε-greedy
+                mask_89 = cell_masks_89[n]
+                if mask_89.sum() == 0:
+                    action_idx = 0  # Fallback
                 else:
-                    if cell_masks_89[n].sum() == 0:
-                        action_idx = 0
+                    masked_q = q_vals.masked_fill(~mask_89, -1e9)
+                    if torch.rand(1, device=device) < epsilon:
+                        valid = torch.nonzero(mask_89, as_tuple=False).squeeze(1)
+                        action_idx = valid[torch.randint(len(valid), (1,), device=device)].item()
                     else:
                         action_idx = masked_q.argmax().item()
 
-                q_choice_list.append(action_idx)
                 full_action[e, ii, jj] = self.qval_to_action(action_idx)
 
-        # Schritt in der Umgebung
+        # 4) Schritt ausführen
         prev_state = self.state.copy()
-        new_state, reward, is_done, infos = self.env.step(full_action.reshape(self.env.num_envs, -1))
-        next_raw_masks = self.env.venv.venv.get_action_mask()
-        self.state = new_state
+        new_state, reward, is_done, infos = self.env.step(full_action.reshape(num_envs, -1))
+        next_raw_masks = self.env.venv.venv.get_action_mask()  # [E, H*W, 78]
+        self.state = new_state  # s_{t+1}
 
-        # Replay‐Handling pro Env
+        # 5) Transitions pro Unit in ihren eigenen Sequenzpuffer legen + ggf. Replay-Append
+        for n in range(K):
+            e = int(env_idx[n].item())
+            ii = int(i_idx[n].item())
+            jj = int(j_idx[n].item())
+            flat = ii * w + jj
+
+            # Aktion als Q-Index
+            single_action_arr = np.array(full_action[e, ii, jj], dtype=np.int64)
+            a_qidx = self.action_to_qval(single_action_arr)
+
+            # Masken (s_t, s_{t+1})
+            act_mask = self.convert_78_to_89_mask(raw_masks[e, flat])
+            next_act_mask = self.convert_78_to_89_mask(next_raw_masks[e, flat])
+
+            key = (e, ii, jj)
+            self.unit_seq_buffers[key].append((
+                prev_state[e],  # s_t [H,W,C]
+                a_qidx,  # a_t  (Q-index)
+                reward[e],  # r_{t+1}
+                is_done[e],  # done
+                new_state[e],  # s_{t+1}
+                (jj, ii),  # (x=j, y=i) für letzten Step
+                act_mask,  # gültige in s_t
+                next_act_mask  # gültige in s_{t+1}
+            ))
+
+            if len(self.unit_seq_buffers[key]) >= seq_len:
+                seq = list(self.unit_seq_buffers[key])[-seq_len:]
+                (states, actions, rewards_, dones, next_states,
+                 unit_positions, action_masks, next_action_masks) = zip(*seq)
+
+                self.exp_buffer.append(states, actions, rewards_, dones,
+                                       next_states, unit_positions,
+                                       action_masks, next_action_masks)
+
+        # 6) Episode-Ende / Logging / Aufräumen
         for env_i in range(num_envs):
-            active_i, active_j = torch.where(units_mask[env_i])
-            for ii, jj in zip(active_i.tolist(), active_j.tolist()):
-                flat = ii * w + jj
-                action_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat])
-                next_action_mask = self.convert_78_to_89_mask(next_raw_masks[env_i, flat])
-                single_action = np.array(full_action[env_i, ii, jj], dtype=np.int64)
-                single_action = self.action_to_qval(single_action)
-
-                # Schritt-Daten ins temporäre Seq-Buffer
-                self.seq_buffers[env_i].append((
-                    prev_state[env_i],  # s_t
-                    single_action,  # a_t
-                    reward[env_i],  # r
-                    is_done[env_i],  # done
-                    new_state[env_i],  # s_{t+1}
-                    (jj, ii),  # unit_pos
-                    action_mask,
-                    next_action_mask
-                ))
-
-                # Wenn genug Steps => in Replay speichern
-                if len(self.seq_buffers[env_i]) >= seq_len:
-                    seq_data = self.seq_buffers[env_i][-seq_len:]
-                    states, actions, rewards, dones, next_states, unit_positions, action_masks, next_action_masks = zip(
-                        *seq_data)
-                    self.exp_buffer.append(states, actions, rewards, dones,
-                                           next_states, unit_positions,
-                                           action_masks, next_action_masks)
-
-            # Episodenabschluss
             self.total_rewards[env_i] += reward[env_i]
             self.episode_steps[env_i] += 1
             if is_done[env_i]:
@@ -547,11 +554,16 @@ class Agent:
                     episode_info[k] = raw_stats.get(f"{k}RewardFunction", 0.0)
                 episode_results.append(episode_info)
 
-                # Reset
+                # Reset Zähler
                 self.env_episode_counter[env_i] += 1
                 self.total_rewards[env_i] = 0.0
                 self.episode_steps[env_i] = 0
+
+                # Verlaufs- und Unit-Puffer dieser Env löschen (keine Episodenvermischung)
                 self.seq_buffers[env_i].clear()
+                to_del = [k for k in list(self.unit_seq_buffers.keys()) if k[0] == env_i]
+                for k in to_del:
+                    del self.unit_seq_buffers[k]
 
         return {"done": False, "episode_stats": episode_results}
 
@@ -700,7 +712,8 @@ if __name__ == "__main__":
     policy_net = UASDRQN(input_shape=dummy_input_shape).to(device)
     target_net = UASDRQN(input_shape=dummy_input_shape).to(device)
     target_net.load_state_dict(policy_net.state_dict())
-
+    policy_net.train()
+    target_net.eval()
 
     optimizer = torch.optim.Adam(policy_net.parameters(), lr=args.learning_rate)
 
@@ -734,6 +747,8 @@ if __name__ == "__main__":
     target_net.load_state_dict(policy_net.state_dict())
 
     torch.save(policy_net.state_dict(), f"./{args.exp_name}/{args.exp_name}_initial.pth")
+
+    initial_sd = {k: v.detach().clone() for k, v in policy_net.state_dict().items()}
 
     # Training
     while frame_idx < args.total_timesteps:
@@ -782,6 +797,13 @@ if __name__ == "__main__":
         loss = agent.calc_loss(batch, target_net, gamma=args.gamma)
         loss.backward()
         optimizer.step()
+
+        with torch.no_grad():
+            total_diff = 0.0
+            for k, v in policy_net.state_dict().items():
+                total_diff += (v - initial_sd[k]).abs().sum().item()
+            if frame_idx % 10000 == 0:
+                print(f"[dbg] Param-Δ L1 seit Start: {total_diff:.4f}")
 
     # Training fertig – final speichern
     torch.save(policy_net.state_dict(), f"./{args.exp_name}/{args.exp_name}_final.pth")
