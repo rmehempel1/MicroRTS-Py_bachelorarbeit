@@ -693,11 +693,26 @@ if __name__ == "__main__":
         eval_executor = ThreadPoolExecutor(max_workers=args.max_eval_workers, thread_name_prefix="league-eval-")
 
     agent = RandomAgent(envs)
+
+    dummy_obs = envs.reset()
+    state_shape = dummy_obs.shape[1:]  # [H, W, C]
+    action_shape = (7,)  # [H, W, 7] später
+    # Dummy-Eingabe für Netz (C,H,W)
+    dummy_input_shape = (state_shape[2], state_shape[0], state_shape[1])
+    net = OpponentActionNet(input_shape=dummy_input_shape)
     # CSV-Datei initialisieren
-    csv_filename = f"./{args.experiment_name}/{args.experiment_name}_metrics_log.csv"
-    with open(csv_filename, mode='w', newline='') as file:
+    model_path = f'./{args.exp_name}/'
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+    csv_path = f'./{args.exp_name}/{args.exp_name}_csv.csv'
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+
+    with open(csv_path, mode='w', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(["iteration", "loss", "train_acc", "eval_acc"])
+    # evalierung initialisieren
+    best_eval_mean = 0
+    eval_window = []
+    save_every = args.save_network  # Intervall für regelmäßiges Speichern
     # Training durchführen
     print(args.batch_size)
     for iteration in range(args.num_iterations):
@@ -708,7 +723,7 @@ if __name__ == "__main__":
               f"Eval-Acc: {result['eval_acc']:.2%}")
 
         # Ergebnisse in CSV speichern
-        with open(csv_filename, mode='a', newline='') as file:
+        with open(csv_path, mode='a', newline='') as file:
             writer = csv.writer(file)
             writer.writerow([
                 iteration,
@@ -716,4 +731,19 @@ if __name__ == "__main__":
                 result['train_acc'],
                 result['eval_acc']
             ])
+        # Gleitender Durchschnitt der letzten 10 Evaluationen
+        eval_window.append(result['eval_acc'])
+        if len(eval_window) > 10:
+            eval_window.pop(0)
+        eval_mean = sum(eval_window) / len(eval_window)
+        # Speichern bei verbessertem Eval-Durchschnitt
+        if eval_mean > best_eval_mean:
+            best_eval_mean = eval_mean
+            torch.save(net.state_dict(), f"./{args.exp_name}/best_model.pt")
+            print(f"Modell mit verbessertem Eval-Durchschnitt ({eval_mean:.4f}) gespeichert.")
+
+        # Regelmäßiges Speichern alle N Iterationen
+        if iteration % save_every == 0 and iteration > 0:
+            torch.save(net.state_dict(), f"{args.exp_name}/model_iter_{iteration}.pt")
+            print(f"Modell bei Iteration {iteration} gespeichert.")
 
