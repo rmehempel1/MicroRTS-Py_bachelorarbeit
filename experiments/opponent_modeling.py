@@ -693,12 +693,27 @@ if __name__ == "__main__":
         eval_executor = ThreadPoolExecutor(max_workers=args.max_eval_workers, thread_name_prefix="league-eval-")
 
     agent = RandomAgent(envs)
-
+    # CSV-Datei initialisieren
+    csv_filename = f"./{args.experiment_name}/{args.experiment_name}_metrics_log.csv"
+    with open(csv_filename, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(["iteration", "loss", "train_acc", "eval_acc"])
     # Training durchführen
     print(args.batch_size)
     for iteration in range(args.num_iterations):
         result = Training(agent, batch_size=args.batch_size)
+        # Ergebnisse drucken
         print(f"[{iteration}] Loss: {result['loss']:.4f}, "
               f"Train-Acc: {result['train_acc']:.2%}, "
               f"Eval-Acc: {result['eval_acc']:.2%}")
+
+        # Ergebnisse in CSV speichern
+        with open(csv_filename, mode='a', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow([
+                iteration,
+                result['loss'],
+                result['train_acc'],
+                result['eval_acc']
+            ])
 
