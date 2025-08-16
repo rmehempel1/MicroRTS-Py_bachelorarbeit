@@ -526,7 +526,8 @@ def Training(agent, batch_size: int, optimizer=None, learning_rate: float = 1e-4
             actions, _ = agent.play_step(epsilon=0.5)
         except Exception:
             actions = env.action_space.sample()
-
+        print(f"obs.shape: {obs.shape}")
+        print(f"actions.shape: {actions.shape}")
         obs, rewards, dones, infos = env.step(actions)
 
         # Nach dem Step: tatsächlich beobachtete Aktionstypen einsammeln
@@ -694,12 +695,7 @@ if __name__ == "__main__":
 
     agent = RandomAgent(envs)
 
-    dummy_obs = envs.reset()
-    state_shape = dummy_obs.shape[1:]  # [H, W, C]
-    action_shape = (7,)  # [H, W, 7] später
-    # Dummy-Eingabe für Netz (C,H,W)
-    dummy_input_shape = (state_shape[2], state_shape[0], state_shape[1])
-    net = OpponentActionNet(input_shape=dummy_input_shape)
+
     # CSV-Datei initialisieren
     model_path = f'./{args.exp_name}/'
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
@@ -736,14 +732,14 @@ if __name__ == "__main__":
         if len(eval_window) > 10:
             eval_window.pop(0)
         eval_mean = sum(eval_window) / len(eval_window)
-        # Speichern bei verbessertem Eval-Durchschnitt
+        # Modell bei verbessertem Eval-Durchschnitt speichern
         if eval_mean > best_eval_mean:
             best_eval_mean = eval_mean
-            torch.save(net.state_dict(), f"./{args.exp_name}/best_model.pt")
+            torch.save(agent._opponent_modeling.net.state_dict(), f"./{args.exp_name}/best_model.pt")
             print(f"Modell mit verbessertem Eval-Durchschnitt ({eval_mean:.4f}) gespeichert.")
 
-        # Regelmäßiges Speichern alle N Iterationen
+        # Regelmäßiges Speichern
         if iteration % save_every == 0 and iteration > 0:
-            torch.save(net.state_dict(), f"{args.exp_name}/model_iter_{iteration}.pt")
+            torch.save(agent._opponent_modeling.net.state_dict(), f"{args.exp_name}/model_iter_{iteration}.pt")
             print(f"Modell bei Iteration {iteration} gespeichert.")
 
