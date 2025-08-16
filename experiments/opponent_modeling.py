@@ -117,7 +117,7 @@ def parse_args():
                         help='Sequenzlänge Rekkurenten Netz, bei 1 kein RNN')
     parser.add_argument('--eval_interval', type=int, default=50_000,
                         help='Wie häufig evaluiert wird')
-    parser.add_argument('num_iterations', type=int, default=10_000,
+    parser.add_argument('--num_iterations', type=int, default=10_000,
                         help='Number of iterations before Treaining ends')
 
 
@@ -659,13 +659,20 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
     reward_weights = np.array([50.0, 3.0, 3.0, 0.0, 5.0, 1.0])
+    num_envs = args.num_bot_envs
+    num_each = num_envs // 4
     envs = MicroRTSGridModeVecEnv(
         num_selfplay_envs=args.num_selfplay_envs,
         num_bot_envs=args.num_bot_envs,
         partial_obs=args.partial_obs,
         max_steps=2000,
         render_theme=2,
-        ai2s=([microrts_ai.workerRushAI for _ in range(args.num_bot_envs)] ),
+        ai2s=(
+            [microrts_ai.passiveAI for _ in range(num_each)] +
+            [microrts_ai.workerRushAI for _ in range(num_each)] +
+            [microrts_ai.lightRushAI for _ in range(num_each)] +
+            [microrts_ai.coacAI for _ in range(num_envs - 3 * num_each)]
+        ),
         # microrts_ai.lightRushAI coacAI passiveAi
         map_paths=[args.train_maps[0]],
         reward_weight=reward_weights, #Win, Ressource, ProduceWorker, Produce Building, Attack, ProduceCombat Unit, (auskommentiert closer to enemy base)
