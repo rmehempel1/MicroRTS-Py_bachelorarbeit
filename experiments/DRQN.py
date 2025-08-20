@@ -198,7 +198,7 @@ class UASDRQN(nn.Module):
         4 return
         4*7 produce direction
         49 attack dir"""
-        self.out = nn.Linear(512,89)
+        self.out = nn.Linear(512,89+1) #+NOOP
 
     def forward(self, x, unit_pos, hidden=None, return_sequence=False):
         """
@@ -352,6 +352,9 @@ class Agent:
             action[0] = 5  # attack
             action[6] = q_val - 40
 
+        elif q_val==89:
+            action[0]=0
+
         return action
 
     def action_to_qval(self, single_action):
@@ -361,7 +364,7 @@ class Agent:
         """
         a_type = single_action[0]
         if a_type == 0:
-            return 0
+            return 89
         elif a_type == 1:
             return 0 + single_action[1]
         elif a_type == 2:
@@ -375,12 +378,12 @@ class Agent:
         else:
             raise ValueError(f"Ungültiger action_type: {a_type}")
 
-    def convert_78_to_89_mask(self, mask_78):
+    def convert_78_to_90_mask(self, mask_78):
         """Konvertiert 78-dim Aktionmaske → 89-diskrete Aktionsmaske"""
         assert mask_78.shape[0] == 78
         if isinstance(mask_78, np.ndarray):
             mask_78 = torch.from_numpy(mask_78).bool()
-        m89 = torch.zeros(89, dtype=torch.bool, device=mask_78.device)
+        m90 = torch.zeros(89, dtype=torch.bool, device=mask_78.device)
 
         # Action types
         is_move = mask_78[1]
@@ -389,39 +392,41 @@ class Agent:
         is_produce = mask_78[4]
         is_attack = mask_78[5]
 
-        # MOVE direction (mask_78[6–9]) → m89[0–3]
+        # MOVE direction (mask_78[6–9]) → m90[0–3]
         if is_move:
             for i in range(4):
                 if mask_78[6 + i]:
-                    m89[i] = True
+                    m90[i] = True
 
-        # HARVEST direction (mask_78[10–13]) → m89[4–7]
+        # HARVEST direction (mask_78[10–13]) → m90[4–7]
         if is_harvest:
             for i in range(4):
                 if mask_78[10 + i]:
-                    m89[4 + i] = True
+                    m90[4 + i] = True
 
-        # RETURN direction (mask_78[14–17]) → m89[8–11]
+        # RETURN direction (mask_78[14–17]) → m90[8–11]
         if is_return:
             for i in range(4):
                 if mask_78[14 + i]:
-                    m89[8 + i] = True
+                    m90[8 + i] = True
 
-        # PRODUCE (type [22–28] × direction [18–21]) → m89[12–39]
+        # PRODUCE (type [22–28] × direction [18–21]) → m90[12–39]
         if is_produce:
             for type_idx in range(7):  # 7 Typen: ressource ... ranged
                 if mask_78[22 + type_idx]:
                     for dir_idx in range(4):  # 4 Richtungen: N, E, S, W
                         if mask_78[18 + dir_idx]:
-                            m89[12 + 4 * type_idx + dir_idx] = True
+                            m90[12 + 4 * type_idx + dir_idx] = True
 
         if is_attack:
-        # Attack (mask_78[29–77]) → m89[40–88]
+        # Attack (mask_78[29–77]) → m90[40–88]
             for i in range(49):
                 if mask_78[29 + i]:
-                    m89[40 + i] = True
+                    m90[40 + i] = True
+        if not (is_move or is_harvest or is_return or is_produce or is_attack):
+            m90[89] = True  # Aktiviert no-op wenn nichts anderes erlaubt ist
 
-        return m89
+        return m90
 
     def play_step(self, epsilon=0.0):
         """
@@ -485,8 +490,8 @@ class Agent:
         # 3) Aktion wählen (ε-greedy) – Sequenz [T,C,H,W] pro Unit ins Netz
         if K > 0:
             flat_idx = i_idx * w + j_idx
-            cell_masks_89 = torch.stack([
-                self.convert_78_to_89_mask(raw_masks[e.item(), f.item()])
+            cell_masks_90 = torch.stack([
+                self.convert_78_to_90_mask(raw_masks[e.item(), f.item()])
                 for e, f in zip(env_idx, flat_idx)
             ], dim=0).to(device=device)  # [K,89] bool
 
@@ -518,14 +523,14 @@ class Agent:
                 q_vals = q_vals.squeeze(0)  # [89]
 
                 # 3.4) Maskieren
-                mask_89 = cell_masks_89[n]
-                if mask_89.sum() == 0:
+                mask_90 = cell_masks_90[n]
+                if mask_90.sum() == 0:
                     action_idx = 0  # Fallback
                 else:
-                    masked_q = q_vals.masked_fill(~mask_89, -1e9)
+                    masked_q = q_vals.masked_fill(~mask_90, -1e9)
                 # 3.5) ε-greedy
                     if torch.rand(1, device=device) < epsilon:
-                        valid = torch.nonzero(mask_89, as_tuple=False).squeeze(1)
+                        valid = torch.nonzero(mask_90, as_tuple=False).squeeze(1)
                         action_idx = valid[torch.randint(len(valid), (1,), device=device)].item()
                     else:
                         action_idx = masked_q.argmax().item()
@@ -553,8 +558,8 @@ class Agent:
             a_qidx = self.action_to_qval(single_action_arr)
 
             # Masken (s_t, s_{t+1})
-            act_mask = self.convert_78_to_89_mask(raw_masks[e, flat])
-            next_act_mask = self.convert_78_to_89_mask(next_raw_masks[e, flat])
+            act_mask = self.convert_78_to_90_mask(raw_masks[e, flat])
+            next_act_mask = self.convert_78_to_90_mask(next_raw_masks[e, flat])
 
             key = (e, ii, jj)
             self.unit_seq_buffers[key].append((
