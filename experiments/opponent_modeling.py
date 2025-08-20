@@ -202,7 +202,7 @@ class OpponentActionNet(nn.Module):
         4 return
         4*7 produce direction
         49 attack dir"""
-        self.out = nn.Linear(512,89)
+        self.out = nn.Linear(512,89+1) #Noop als mögliche Aktion hinzugefügt
 
     def forward(self, x, unit_pos=None):
         # x: [B, C, H, W]
@@ -269,78 +269,81 @@ class OpponentModeling:
         elif 40 <= q_val <= 88:
             action[0] = 5  # attack
             action[6] = q_val - 40
+        elif q_val==89:
+            action[0]=0
 
         return action
-
-    def action_to_qval(self, single_action):
         """
-        single_action: list or tensor with 7 integers
-        [action_type, move_dir, harvest_dir, return_dir, produce_dir, produce_type, attack_idx]
+        def action_to_qval(self, single_action):
+            
+            single_action: list or tensor with 7 integers
+            [action_type, move_dir, harvest_dir, return_dir, produce_dir, produce_type, attack_idx]
+            
+            a_type = single_action[0]
+            if a_type == 0:
+                return 0
+            elif a_type == 1:
+                return 0 + single_action[1]
+            elif a_type == 2:
+                return 4 + single_action[2]
+            elif a_type == 3:
+                return 8 + single_action[3]
+            elif a_type == 4:
+                return 12 + single_action[5] * 4 + single_action[4]
+            elif a_type == 5:
+                return 40 + single_action[6]
+            else:
+                raise ValueError(f"Ungültiger action_type: {a_type}")
         """
-        a_type = single_action[0]
-        if a_type == 0:
-            return 0
-        elif a_type == 1:
-            return 0 + single_action[1]
-        elif a_type == 2:
-            return 4 + single_action[2]
-        elif a_type == 3:
-            return 8 + single_action[3]
-        elif a_type == 4:
-            return 12 + single_action[5] * 4 + single_action[4]
-        elif a_type == 5:
-            return 40 + single_action[6]
-        else:
-            raise ValueError(f"Ungültiger action_type: {a_type}")
-
-    def convert_78_to_89_mask(self, mask_78):
-        """Konvertiert 78-dim Aktionmaske → 89-diskrete Aktionsmaske"""
-        assert mask_78.shape[0] == 78
-        if isinstance(mask_78, np.ndarray):
-            mask_78 = torch.from_numpy(mask_78).bool()
-        m89 = torch.zeros(89, dtype=torch.bool, device=mask_78.device)
-
-        # Action types
-        is_move = mask_78[1]
-        is_harvest = mask_78[2]
-        is_return = mask_78[3]
-        is_produce = mask_78[4]
-        is_attack = mask_78[5]
-
-        # MOVE direction (mask_78[6–9]) → m89[0–3]
-        if is_move:
-            for i in range(4):
-                if mask_78[6 + i]:
-                    m89[i] = True
-
-        # HARVEST direction (mask_78[10–13]) → m89[4–7]
-        if is_harvest:
-            for i in range(4):
-                if mask_78[10 + i]:
-                    m89[4 + i] = True
-
-        # RETURN direction (mask_78[14–17]) → m89[8–11]
-        if is_return:
-            for i in range(4):
-                if mask_78[14 + i]:
-                    m89[8 + i] = True
-
-        # PRODUCE (type [22–28] × direction [18–21]) → m89[12–39]
-        if is_produce:
-            for type_idx in range(7):  # 7 Typen: ressource ... ranged
-                if mask_78[22 + type_idx]:
-                    for dir_idx in range(4):  # 4 Richtungen: N, E, S, W
-                        if mask_78[18 + dir_idx]:
-                            m89[12 + 4 * type_idx + dir_idx] = True
-
-        if is_attack:
-        # Attack (mask_78[29–77]) → m89[40–88]
-            for i in range(49):
-                if mask_78[29 + i]:
-                    m89[40 + i] = True
-
-        return m89
-
+        """
+        def convert_78_to_89_mask(self, mask_78):
+            #Konvertiert 78-dim Aktionmaske → 89-diskrete Aktionsmaske
+            assert mask_78.shape[0] == 78
+            if isinstance(mask_78, np.ndarray):
+                mask_78 = torch.from_numpy(mask_78).bool()
+            m89 = torch.zeros(89, dtype=torch.bool, device=mask_78.device)
+    
+            # Action types
+            is_move = mask_78[1]
+            is_harvest = mask_78[2]
+            is_return = mask_78[3]
+            is_produce = mask_78[4]
+            is_attack = mask_78[5]
+    
+            # MOVE direction (mask_78[6–9]) → m89[0–3]
+            if is_move:
+                for i in range(4):
+                    if mask_78[6 + i]:
+                        m89[i] = True
+    
+            # HARVEST direction (mask_78[10–13]) → m89[4–7]
+            if is_harvest:
+                for i in range(4):
+                    if mask_78[10 + i]:
+                        m89[4 + i] = True
+    
+            # RETURN direction (mask_78[14–17]) → m89[8–11]
+            if is_return:
+                for i in range(4):
+                    if mask_78[14 + i]:
+                        m89[8 + i] = True
+    
+            # PRODUCE (type [22–28] × direction [18–21]) → m89[12–39]
+            if is_produce:
+                for type_idx in range(7):  # 7 Typen: ressource ... ranged
+                    if mask_78[22 + type_idx]:
+                        for dir_idx in range(4):  # 4 Richtungen: N, E, S, W
+                            if mask_78[18 + dir_idx]:
+                                m89[12 + 4 * type_idx + dir_idx] = True
+    
+            if is_attack:
+            # Attack (mask_78[29–77]) → m89[40–88]
+                for i in range(49):
+                    if mask_78[29 + i]:
+                        m89[40 + i] = True
+    
+            return m89
+        """
     def predict(self):
         net = self.net
         device = self.device
@@ -348,13 +351,15 @@ class OpponentModeling:
         raw_masks = torch.from_numpy(raw_masks_np).to(device=device).bool()  # [num_envs, H*W, 78]
         _, h, w, _ = self.state.shape
         num_envs = self.env.num_envs
-
         state_v = torch.tensor(self.state.transpose(0, 3, 1, 2), dtype=torch.float32, device=device)
         self.num_units = 0
+
         for env_i in range(num_envs):
             for i in range(h):
                 for j in range(w):
                     if self.state[env_i, i, j, 12] == 1 and self.state[env_i, i, j, 21] == 1:
+
+                        #units indizieren und zählen
                         self.unit_idx += 1
                         self.num_units += 1
 
@@ -362,19 +367,25 @@ class OpponentModeling:
                         state_v_single = state_v[env_i:env_i + 1]
                         unit_pos = torch.tensor([[j, i]], dtype=torch.float32, device=device)
                         flat_idx = i * h + j
-                        cell_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat_idx])
+                        #cell_mask = self.convert_78_to_89_mask(raw_masks[env_i, flat_idx])
 
                         # Q vals berechnen
                         q_vals_v = net(state_v_single, unit_pos=unit_pos)[0]  # [89]
+                        #print(f"q_vals: {q_vals_v}")
                         # Q vals maskieren
-                        masked_q_vals = q_vals_v.masked_fill(~cell_mask, -1e9)
+                        """
+                            Maskierung aufgehoben weil microRTS keine valide Optionen für feindliche Einheiten zurückgibt
+                            masked_q_vals = q_vals_v.masked_fill(~cell_mask, -1e9)
+                            print(f"masked_q_vals:{masked_q_vals}")
+                            
+                        """
                         # Maskierte Q-Vals
                         self.predictions.append({
                             "unit_idx": self.unit_idx,
                             "env_idx": env_i,
                             "unit_pos": (i, j),
                             #"pred_action_type": action_type,
-                            "q_vals": masked_q_vals
+                            "q_vals": q_vals_v
                         })
 
 
@@ -388,6 +399,7 @@ class OpponentModeling:
             for j in range(6):                              #ließt die current Action Plane 21-26
                 if self.state[env_idx, x, y, 21 + j] == 1:
                     observed_action_type = j
+                    #print(f"Observed_Action Type: {observed_action_type} Unit Pos {x},{y}")
                     break
 
             pred["observed_action_type"] = observed_action_type     #speichert diese in pred
@@ -398,6 +410,7 @@ class OpponentModeling:
         for pred in self.predictions:
             obs_type = pred.get("observed_action_type")
             logits = pred.get("q_vals")  # Shape: [89]
+            #print(f"logits shape in calc loss: {logits}")
 
             if obs_type is None or logits is None:
                 continue
@@ -409,9 +422,11 @@ class OpponentModeling:
             action_type_logits[3] = logits[8:12].max()  # Return
             action_type_logits[4] = logits[12:40].max()  # Produce
             action_type_logits[5] = logits[40:].max()  # Attack
-            action_type_logits[0] = logits.min() - 1 # nicht verwendet
+            action_type_logits[0] = logits[89]   # no-op
+            #print(f"action_type_logits: {action_type_logits.argmax()}")
             logits_list.append(action_type_logits.unsqueeze(0))  # [1, 6]
             labels_list.append(torch.tensor([obs_type], device=device))
+            #print(f"Prediction List: {logits_list}")
 
         if len(logits_list) == 0:
             return None
@@ -437,7 +452,7 @@ class OpponentModeling:
 8)  Wiederhole 3-8 bis 
 """
 
-def Training(agent, batch_size: int, optimizer=None, learning_rate: float = 1e-4, eval_ratio: float = 0.2):
+def Training(agent,obs, batch_size: int, optimizer=None, learning_rate: float = 1e-4, eval_ratio: float = 0.2):
     """
     Führt genau EINE Trainings-Aktualisierung für das Opponent-Modeling-Netz durch.
     Ablauf:
@@ -472,21 +487,23 @@ def Training(agent, batch_size: int, optimizer=None, learning_rate: float = 1e-4
     if env is None:
         raise RuntimeError("Konnte keine Env am Agent finden (weder .get_env() noch .env).")
 
-    obs = env.reset()
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 2) OpponentModel / Netz initialisieren (einmalig am Agent cachen)
     if not hasattr(agent, "_opponent_modeling"):
         # Input-Shape (C, H, W) für das Netz aus der Beobachtung ableiten
-        if len(obs.shape) != 4:
+        if len(obs.shape) != 4: #überrüft ob der shape die erwarteten [num_envs, H, W, C] hat
             raise RuntimeError(f"Erwarte VecEnv-Obs mit Shape [num_envs, H, W, C], bekam: {obs.shape}")
         _, H, W, C = obs.shape
         net = OpponentActionNet((C, H, W)).to(device)
+
+
+
         opponent_model = OpponentModeling(env=env, state=obs, net=net, device=device)
         agent._opponent_modeling = opponent_model
 
-        if optimizer is None:
-            optimizer = optim.Adam(opponent_model.net.parameters(), lr=learning_rate)
+        optimizer = optim.Adam(opponent_model.net.parameters(), lr=learning_rate)
         agent._opponent_optimizer = optimizer
     else:
         opponent_model = agent._opponent_modeling
@@ -509,7 +526,7 @@ def Training(agent, batch_size: int, optimizer=None, learning_rate: float = 1e-4
         atl[3] = q_vals[8:12].max()     # Return
         atl[4] = q_vals[12:40].max()    # Produce
         atl[5] = q_vals[40:].max()      # Attack
-        atl[0] = -1e9                   # "no-op"/nicht verwendet
+        atl[0] = q_vals[89]                # "no-op"/nicht verwendet
         return atl
 
     # 3) Daten für EIN Update sammeln
@@ -520,22 +537,14 @@ def Training(agent, batch_size: int, optimizer=None, learning_rate: float = 1e-4
         # Vor dem Step: Vorhersagen für aktuelle Gegner-Units erzeugen
         opponent_model.state = obs
         opponent_model.predict()
-
         # Agenten-Aktion ausführen (Fallback: random action, falls predict fehlschlägt)
-        try:
-            actions, _ = agent.play_step(epsilon=0.5)
-        except Exception:
-            actions = env.action_space.sample()
-        print(f"obs.shape: {obs.shape}")
-        print(f"actions.shape: {actions.shape}")
-        obs, rewards, dones, infos = env.step(actions)
-
+        #print(f"obs.shape: {obs.shape}")
+        obs, _, _, _ =agent.play_step(epsilon=0.5)
         # Nach dem Step: tatsächlich beobachtete Aktionstypen einsammeln
         opponent_model.state = obs
         opponent_model.observe()
 
         units_collected += opponent_model.num_units
-
         # VecEnv setzt automatisch zurück nur weiterlaufen
 
     # 4) Loss berechnen und Optimizer-Step
@@ -560,7 +569,7 @@ def Training(agent, batch_size: int, optimizer=None, learning_rate: float = 1e-4
                 total += 1
         train_acc = (correct / total) if total > 0 else None
 
-    # 5) Kurze Evaluation (ohne Gradienten), falls gewünscht
+    # 5) Kurze Evaluation (ohne Gradienten)
     eval_acc = None
     eval_units_target = int(max(0, eval_ratio) * batch_size)
     if eval_units_target > 0:
@@ -570,20 +579,19 @@ def Training(agent, batch_size: int, optimizer=None, learning_rate: float = 1e-4
             while collected < eval_units_target:
                 opponent_model.state = obs
                 opponent_model.predict()
-                try:
-                    actions, _ = agent.predict(obs, deterministic=True)
-                except Exception:
-                    actions = env.action_space.sample()
 
-                obs, rewards, dones, infos = env.step(actions)
+                obs, _, _, _ =agent.play_step()
+
                 opponent_model.state = obs
                 opponent_model.observe()
 
                 # nur die zuletzt hinzugefügten Vorhersagen der aktuellen Schrittfolge auswerten
+                # bestimmt wie viel Prozent richtig waren
                 for pred in opponent_model.predictions[-opponent_model.num_units:]:
                     ot = pred.get("observed_action_type")
                     qv = pred.get("q_vals")
                     if ot is None or qv is None:
+                        print("no qval or predictions")
                         continue
                     pred_type = int(torch.argmax(_action_type_logits_from_qvals(qv)).item())
                     correct += int(pred_type == ot)
@@ -597,13 +605,14 @@ def Training(agent, batch_size: int, optimizer=None, learning_rate: float = 1e-4
         "loss": (float(loss.item()) if loss is not None else None),
         "train_acc": (float(train_acc) if train_acc is not None else None),
         "eval_acc": (float(eval_acc) if eval_acc is not None else None),
+        "obs": obs #neue Observation zurückgeben
     }
 
 class RandomAgent:
     def __init__(self, env):
         self.env = env
         self.num_envs = env.num_envs
-        self.last_obs = self.env.reset()
+
 
     def predict(self, obs=None, deterministic=False):
         # Gibt zufällige Aktionen für alle Envs zurück
@@ -613,12 +622,10 @@ class RandomAgent:
         return actions, None
 
     def play_step(self, epsilon=0.0):
-        # Nimmt zufällige Aktionen, führt einen Schritt aus
         actions = self.env.action_space.sample()
         next_obs, rewards, dones, infos = self.env.step(actions)
-        envs.venv.venv.render(mode="human")
         self.last_obs = next_obs
-        return actions, rewards
+        return next_obs, rewards, dones, infos
 
     def get_env(self):
         return self.env
@@ -711,8 +718,9 @@ if __name__ == "__main__":
     save_every = args.save_network  # Intervall für regelmäßiges Speichern
     # Training durchführen
     print(args.batch_size)
+    obs = envs.reset()
     for iteration in range(args.num_iterations):
-        result = Training(agent, batch_size=args.batch_size)
+        result = Training(agent,obs, batch_size=args.batch_size)
         # Ergebnisse drucken
         print(f"[{iteration}] Loss: {result['loss']:.4f}, "
               f"Train-Acc: {result['train_acc']:.2%}, "
