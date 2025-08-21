@@ -10,6 +10,8 @@ from stable_baselines3.common.vec_env import VecEnvWrapper, VecMonitor, VecVideo
 from gym_microrts import microrts_ai
 from gym_microrts.envs.vec_env import MicroRTSGridModeVecEnv
 from collections import deque
+import csv
+
 import os
 
 def parse_args():
@@ -342,10 +344,45 @@ if __name__ == "__main__":
     model = StatePredictionNet(input_shape=input_shape)
     state_modeling = StateModeling(env=env, net=model, agent=random_agent, device=device)
 
+    log_path = f"./{args.exp_name}/{args.exp_name}_training_log.csv"
+    if not os.path.exists(log_path):
+        with open(log_path, mode='w', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(
+                ["epoch", "avg_loss", "num_units", "num_pred_units", "num_correct_units", "precision", "recall", "f1"])
+
+    best_f1 = 0.0
+    best_epoch = -1
+
     for epoch in range(1000):
         avg_loss = state_modeling.train()
-        print(f"Epoch {epoch}: avg loss = {avg_loss}")
-        if epoch % 100 ==0:
+
+        if epoch % 100 == 0:
             num_units, num_predUnits, num_correctUnits = state_modeling.evaluat()
-            print(f"num_units, num_predUnits, num_correctUnits: {num_units, num_predUnits, num_correctUnits}")
+
+            precision = num_correctUnits / (num_predUnits + 1e-8)
+            recall = num_correctUnits / (num_units + 1e-8)
+            f1 = 2 * (precision * recall) / (precision + recall + 1e-8)
+
+            print(f"[Eval] Epoch {epoch} | Units: {num_units} | Pred: {num_predUnits} | Correct: {num_correctUnits}")
+            print(f"[Eval] Precision: {precision:.4f} | Recall: {recall:.4f} | F1: {f1:.4f}")
+
+            if f1 > best_f1:
+                best_epoch = epoch
+                best_f1 = f1
+                torch.save(state_modeling.net.state_dict(), "best_model.pth")
+                print(f"New best model saved at epoch {best_epoch} with F1 = {f1:.4f}")
+
+            with open(log_path, mode='a', newline='') as file:
+                writer = csv.writer(file)
+                writer.writerow([
+                    epoch,
+                    avg_loss,
+                    num_units,
+                    num_predUnits,
+                    num_correctUnits,
+                    precision,
+                    recall,
+                    f1
+                ])
 
