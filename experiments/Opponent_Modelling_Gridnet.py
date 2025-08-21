@@ -215,7 +215,7 @@ class StateModeling:
         self.batch_size = batch_size
         self.agent = agent
         self.state = self.env.reset()
-        self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([15.0]).to(self.device))
+        self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([12.0]).to(self.device))
         self.optimizer = torch.optim.Adam(self.net.parameters(), lr=1e-3)
 
     def train(self):
@@ -320,7 +320,7 @@ if __name__ == "__main__":
         max_steps=args.max_steps,
         render_theme=2,
         ai2s=(
-            [microrts_ai.workerRushAI for _ in range(args.num_bot_envs)]+
+
             [microrts_ai.workerRushAI for _ in range(num_each)] +
             [microrts_ai.lightRushAI for _ in range(num_each)] +
             [microrts_ai.coacAI for _ in range(num_envs - 3 * num_each)]
