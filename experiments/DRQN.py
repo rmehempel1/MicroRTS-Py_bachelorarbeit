@@ -113,7 +113,7 @@ def parse_args():
                         help="Wie häufig das Netz gespeichert werden soll")
     parser.add_argument('--sequence_length', type=int, default=4,
                         help='Sequenzlänge Rekkurenten Netz, bei 1 kein RNN')
-    parser.add_argument('--eval_interval', type=int, default=50_000,
+    parser.add_argument('--eval_interval', type=int, default=100,
                         help='Wie häufig evaluiert wird')
 
     args = parser.parse_args()
@@ -325,7 +325,7 @@ class Agent:
         Rückgabe: Array mit:
         [action_type, move_dir, harvest_dir, return_dir, produce_dir, produce_type, attack_idx]
         """
-        if not (0 <= q_val <= 88):
+        if not (0 <= q_val <= 89):
             raise ValueError("q_val muss im Bereich 0–88 liegen.")
 
         action = np.zeros(7, dtype=np.int32)
@@ -383,7 +383,7 @@ class Agent:
         assert mask_78.shape[0] == 78
         if isinstance(mask_78, np.ndarray):
             mask_78 = torch.from_numpy(mask_78).bool()
-        m90 = torch.zeros(89, dtype=torch.bool, device=mask_78.device)
+        m90 = torch.zeros(90, dtype=torch.bool, device=mask_78.device)
 
         # Action types
         is_move = mask_78[1]
@@ -494,7 +494,8 @@ class Agent:
                 self.convert_78_to_90_mask(raw_masks[e.item(), f.item()])
                 for e, f in zip(env_idx, flat_idx)
             ], dim=0).to(device=device)  # [K,89] bool
-
+            # [T,H,W,C] -> [T,C,H,W]
+            state_seq_t = torch.tensor(np.array(state_seq), dtype=torch.float32, device=device).permute(0, 3, 1, 2)
             for n in range(K):
                 """
                 Iteration über alle auswählbaren Einheiten
@@ -510,16 +511,14 @@ class Agent:
                 jj = int(j_idx[n].item())
 
 
-
-
-                # [T,H,W,C] -> [T,C,H,W]
-                state_seq_t = torch.tensor(np.array(state_seq), dtype=torch.float32, device=device).permute(0, 3, 1, 2)
-
                 # 3.2) Positionsencoding (nur letzter Step)
                 unit_pos_t = torch.tensor([jj, ii], dtype=torch.float32, device=device).unsqueeze(0)  # [1,2]
 
                 # 3)Netzaufruf: [B=1,T,C,H,W] -> Q[last]
                 q_vals, _ = net(state_seq_t.unsqueeze(0), unit_pos=unit_pos_t)  # [1,89]
+                print("Q-vals stats: min", q_vals.min().item(), "max", q_vals.max().item(), "mean",
+                      q_vals.mean().item())
+
                 q_vals = q_vals.squeeze(0)  # [89]
 
                 # 3.4) Maskieren
@@ -527,6 +526,7 @@ class Agent:
                 if mask_90.sum() == 0:
                     action_idx = 0  # Fallback
                 else:
+                    print(mask_90.shape, q_vals.shape)
                     masked_q = q_vals.masked_fill(~mask_90, -1e9)
                 # 3.5) ε-greedy
                     if torch.rand(1, device=device) < epsilon:
@@ -673,12 +673,57 @@ class Agent:
         return loss
 
 
+def run_evaluation_with_train_env(agent, envs, policy_net, model_dir, frame_idx, csv_path, best_eval_reward):
+    print(f"[Eval] Starte Inline-Evaluation bei Frame {frame_idx}")
+
+    num_envs = envs.num_envs
+    max_eval_eps = 10
+    done_envs = [0] * num_envs
+    episode_stats = []
+
+    envs.reset()
+    agent.env_episode_counter = [0 for _ in range(num_envs)]
+
+    while sum(done_envs) < num_envs * max_eval_eps:
+        result = agent.play_step(epsilon=0.0)
+        for ep_data in result.get("episode_stats", []):
+            print(f"Done envs: {done_envs} / {num_envs * max_eval_eps}")
+            env = ep_data["env"]
+            done_envs[env] += 1
+            ep_data["frame_idx"] = frame_idx
+            episode_stats.append(ep_data)
+
+    # Write to CSV
+    eval_csv_path = f"{args.exp_name}/{args.exp_name}_inline_eval.csv"
+    print(eval_csv_path)
+    os.makedirs(csv_path, exist_ok=True)
+    write_header = not os.path.exists(eval_csv_path) or os.stat(eval_csv_path).st_size == 0
+
+    with open(eval_csv_path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=episode_stats[0].keys())
+        if write_header:
+            writer.writeheader()
+        writer.writerows(episode_stats)
+
+    # Auswertung
+    mean_reward = np.mean([ep["reward"] for ep in episode_stats])
+    print(f"[Eval] ⬅ Durchschnittlicher Reward: {mean_reward:.2f} über {len(episode_stats)} Episoden")
+
+    # Modell speichern bei Verbesserung
+    if mean_reward > best_eval_reward:
+        print(f"[Eval] Neue Bestleistung! Modell wird gespeichert.")
+        best_eval_reward = mean_reward
+        best_path = os.path.join(model_dir, f"{args.exp_name}_best.pth")
+        torch.save(policy_net.state_dict(), best_path)
+
+    return best_eval_reward
 
 
 if __name__ == "__main__":
+
     print(">>> Argumentparser wird initialisiert")
     args = parse_args()
-
+    print(args.exp_name)
     # NEU: Sequenzlänge als Parameter (falls nicht schon in parse_args vorhanden)
     seq_len=args.sequence_length
 
@@ -744,6 +789,7 @@ if __name__ == "__main__":
         from concurrent.futures import ThreadPoolExecutor
         eval_executor = ThreadPoolExecutor(max_workers=args.max_eval_workers, thread_name_prefix="league-eval-")
 
+
     # Initialisierung
     dummy_obs = envs.reset()
     state_shape = dummy_obs.shape[1:]  # [H, W, C]
@@ -772,16 +818,16 @@ if __name__ == "__main__":
     print(f"Gesamtanzahl der trainierbaren Parameter: {total_params}")
 
     frame_idx = 0
-    best_mean_reward = None
+    best_eval_reward=-1000
     reward_queue = deque(maxlen=100)
     warmup_frames = args.warmup_frames
-    eval_interval = 100000
 
     # Ordner
     model_dir = f"./{args.exp_name}/model/"
     os.makedirs(model_dir, exist_ok=True)
     csv_path = f"./csv/{args.exp_name}.csv"
     os.makedirs("./csv", exist_ok=True)
+
 
     reward_names = [
         "WinLossReward", "ResourceGatherReward", "ProduceWorkerReward",
@@ -814,17 +860,7 @@ if __name__ == "__main__":
 
         step_info = agent.play_step(epsilon=epsilon)
 
-        for ep_data in step_info.get("episode_stats", []):
-            with open(log_path, "a") as f:
-                ep_data_with_frame = dict(ep_data)
-                ep_data_with_frame["frame_idx"] = frame_idx
-                if not file_exists or os.stat(log_path).st_size == 0:
-                    header = list(ep_data_with_frame.keys())
-                    f.write(",".join(header) + "\n")
-                else:
-                    header = list(ep_data_with_frame.keys())
-                values = [str(ep_data_with_frame[k]) for k in header]
-                f.write(",".join(values) + "\n")
+
 
         if len(expbuffer) < args.batch_size:
             continue
@@ -848,18 +884,50 @@ if __name__ == "__main__":
         loss.backward()
         optimizer.step()
 
-        with torch.no_grad():
-            total_diff = 0.0
-            for k, v in policy_net.state_dict().items():
-                total_diff += (v - initial_sd[k]).abs().sum().item()
-            if frame_idx % 10000 == 0:
-                print(f"[dbg] Param-Lambda L1 seit Start: {total_diff:.4f}")
-        # Evaluierung
-        """
-        if frame_idx % args.eval_interval==0:
-            policy_net.eval()
-            target_net.eval()
-        """
+        total_norm = 0.0
+        for p in policy_net.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+        total_norm = total_norm ** 0.5
+        if frame_idx % 1000 == 0:
+            print(f"[grad] global L2 before clip: {total_norm:.4f}")
+
+        # Optionales Clipping (falls gewünscht)
+        # (du nutzt max_grad_norm in den Args, aber clip wird im Code bisher nicht aufgerufen)
+        if hasattr(args, "max_grad_norm") and args.max_grad_norm and args.max_grad_norm > 0:
+            clipped = torch.nn.utils.clip_grad_norm_(policy_net.parameters(), args.max_grad_norm)
+            if frame_idx % 1000 == 0:
+                print(f"[grad] global L2 after  clip: {clipped:.4f} (limit {args.max_grad_norm})")
+
+
+        for ep_data in step_info.get("episode_stats", []):
+            with open(log_path, "a") as f:
+                ep_data_with_frame = dict(ep_data)
+                ep_data_with_frame["frame_idx"] = frame_idx
+                ep_data_with_frame["loss"] = loss.item()
+                if not file_exists or os.stat(log_path).st_size == 0:
+                    header = list(ep_data_with_frame.keys())
+                    f.write(",".join(header) + "\n")
+                else:
+                    header = list(ep_data_with_frame.keys())
+                values = [str(ep_data_with_frame[k]) for k in header]
+                f.write(",".join(values) + "\n")
+
+        # --- EVALUATIONSSCHLEIFE ---
+        if frame_idx % args.eval_interval == 0:
+
+            best_eval_reward = run_evaluation_with_train_env(
+                agent=agent,
+                envs=envs,
+                policy_net=policy_net,
+                model_dir=model_dir,
+                frame_idx=frame_idx,
+                csv_path="./csv",
+                best_eval_reward=best_eval_reward
+            )
+
+
 
     # Training fertig – final speichern
     torch.save(policy_net.state_dict(), f"./{args.exp_name}/{args.exp_name}_final.pth")
