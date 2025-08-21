@@ -525,7 +525,6 @@ class Agent:
                 if mask_90.sum() == 0:
                     action_idx = 0  # Fallback
                 else:
-                    print(mask_90.shape, q_vals.shape)
                     masked_q = q_vals.masked_fill(~mask_90, -1e9)
                 # 3.5) ε-greedy
                     if torch.rand(1, device=device) < epsilon:
