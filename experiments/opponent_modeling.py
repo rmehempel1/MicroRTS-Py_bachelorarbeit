@@ -661,7 +661,11 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     print(f"Device: {device}")
-
+    """
+     [microrts_ai.workerRushAI for _ in range(num_each)] +
+            [microrts_ai.lightRushAI for _ in range(num_each)] +
+            [microrts_ai.coacAI for _ in range(num_envs - 3 * num_each)]
+    """
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -676,10 +680,7 @@ if __name__ == "__main__":
         max_steps=2000,
         render_theme=2,
         ai2s=(
-            [microrts_ai.passiveAI for _ in range(num_each)] +
-            [microrts_ai.workerRushAI for _ in range(num_each)] +
-            [microrts_ai.lightRushAI for _ in range(num_each)] +
-            [microrts_ai.coacAI for _ in range(num_envs - 3 * num_each)]
+            [microrts_ai.workerRushAI for _ in range(args.num_bot_envs)]
         ),
         # microrts_ai.lightRushAI coacAI passiveAi
         map_paths=[args.train_maps[0]],
