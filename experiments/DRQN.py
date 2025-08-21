@@ -755,7 +755,11 @@ if __name__ == "__main__":
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
-
+    """
+    [microrts_ai.workerRushAI for _ in range(num_each)] +
+            [microrts_ai.lightRushAI for _ in range(num_each)] +
+            [microrts_ai.coacAI for _ in range(num_envs - 3 * num_each)]
+    """
     # Environment Setup
     reward_weights = np.array([50.0, 3.0, 3.0, 0.0, 5.0, 1.0])
     num_envs = args.num_bot_envs
@@ -767,10 +771,7 @@ if __name__ == "__main__":
         max_steps=args.max_steps,
         render_theme=2,
         ai2s=(
-            [microrts_ai.passiveAI for _ in range(num_each)] +
-            [microrts_ai.workerRushAI for _ in range(num_each)] +
-            [microrts_ai.lightRushAI for _ in range(num_each)] +
-            [microrts_ai.coacAI for _ in range(num_envs - 3 * num_each)]
+            [microrts_ai.passiveAI for _ in range(args.num_bot_envs)]
         ),
         map_paths=[args.train_maps[0]],
         reward_weight=reward_weights,
