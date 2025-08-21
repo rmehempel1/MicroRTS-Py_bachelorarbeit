@@ -516,8 +516,7 @@ class Agent:
 
                 # 3)Netzaufruf: [B=1,T,C,H,W] -> Q[last]
                 q_vals, _ = net(state_seq_t.unsqueeze(0), unit_pos=unit_pos_t)  # [1,89]
-                print("Q-vals stats: min", q_vals.min().item(), "max", q_vals.max().item(), "mean",
-                      q_vals.mean().item())
+
 
                 q_vals = q_vals.squeeze(0)  # [89]
 
