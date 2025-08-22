@@ -217,7 +217,7 @@ class StateModeling:
         self.batch_size = batch_size
         self.agent = agent
         self.state = self.env.reset()
-        self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([12.0]).to(self.device))
+        self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([20.0]).to(self.device))
         self.optimizer = torch.optim.Adam(self.net.parameters(), lr=1e-3)
 
     def train(self):
