@@ -223,18 +223,26 @@ class UASDRQN(nn.Module):
         hidden:   optionaler initialer Hidden State für RNN [1, B, hidden_dim]
         return_sequence: wenn True, gibt gesamte Sequenz zurück, sonst nur letzten Schritt
         """
-
+        """
+        nach encoder: torch.Size([4, 58, 8, 8])
+        nach Pooling: torch.Size([4, 58, 1, 1])
+        view: torch.Size([1, 4, 58])
+        nach Positional Encoding: torch.Size([1, 4, 60])
+        nach Fully Connected: torch.Size([1, 4, 512])
+        nach RNN torch.Size([1, 4, 512])
+        out: torch.Size([1, 90])
+        """
 
         # --- CNN-Feature-Extraktion ---
         x = self.add_positional_channels(x)  # [B, T, C+2, H, W]
         B, T, C, H, W = x.size()
         x = x.view(B * T, C, H, W)
         feat = self.encoder(x)
-        print("nach encoder:", feat.shape)
+        #print("nach encoder:", feat.shape)
         feat = self.pool(feat)  # [B*T, C, 1, 1]
-        print(f"nach Pooling: {feat.shape}")
+        #print(f"nach Pooling: {feat.shape}")
         feat = feat.view(B, T, -1)  # [B, T, C]
-        print("view:", feat.shape)
+        #print("view:", feat.shape)
 
 
         # --- Positional Encoding nur für letzten Frame ---
@@ -249,15 +257,15 @@ class UASDRQN(nn.Module):
 
         # Features + Position
         feat_with_pos = torch.cat([feat, pos_enc_seq], dim=2)  # [B, T, F+2]
-        print("nach Positional Encoding:", feat_with_pos.shape)
+        #print("nach Positional Encoding:", feat_with_pos.shape)
         # --- Vollverbundene Schicht vor RNN ---
         feat_with_pos = self.fc(feat_with_pos)  # [B, T, hidden_dim]
-        print("nach Fully Connected:", feat_with_pos.shape)
+        #print("nach Fully Connected:", feat_with_pos.shape)
         # --- RNN über gesamte Sequenz ---
         rnn_out, _ = self.rnn(feat_with_pos)
-        print("nach RNN", rnn_out.shape)
+        #print("nach RNN", rnn_out.shape)
         out = self.out(rnn_out[:, -1, :])  # Nur letzter Time Step → [B, action_dim]
-        print("out:", out.shape)
+        #print("out:", out.shape)
 
         return out
 
@@ -715,7 +723,7 @@ def run_evaluation_with_train_env(agent, envs, policy_net, model_dir, frame_idx,
     while sum(done_envs) < num_envs * max_eval_eps:
         result = agent.play_step(epsilon=0.0)
         for ep_data in result.get("episode_stats", []):
-            print(f"Done envs: {done_envs} / {num_envs * max_eval_eps}")
+            #print(f"Done envs: {done_envs} / {num_envs * max_eval_eps}")
             env = ep_data["env"]
             done_envs[env] += 1
             ep_data["frame_idx"] = frame_idx
@@ -876,7 +884,7 @@ if __name__ == "__main__":
     # Training
     while frame_idx < args.total_timesteps:
         frame_idx += 1
-        print(frame_idx)
+        #print(frame_idx)
         if frame_idx % 1000 == 0:
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Frame idx: {frame_idx}")
 
