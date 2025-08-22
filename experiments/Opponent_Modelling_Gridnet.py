@@ -11,6 +11,7 @@ from gym_microrts import microrts_ai
 from gym_microrts.envs.vec_env import MicroRTSGridModeVecEnv
 from collections import deque
 import csv
+from datetime import datetime
 
 import os
 
@@ -109,6 +110,8 @@ def parse_args():
                         help='Sequenzlänge Rekkurenten Netz, bei 1 kein RNN')
     parser.add_argument('--eval_interval', type=int, default=10000,
                         help='Wie häufig evaluiert wird')
+    parser.add_argument("--num-epochs", type=int, default=1_000_000)
+    parser.add_argument("--positive-weight", type=int, default=20)
 
     args = parser.parse_args()
     if not args.seed:
@@ -209,7 +212,7 @@ import random
 from collections import deque
 
 class StateModeling:
-    def __init__(self, env, net, device, buffer_size=10000, batch_size=32, agent=None):
+    def __init__(self, env, net, device, buffer_size=10000, batch_size=32, agent=None, positive_weight=20):
         self.env = env
         self.net = net.to(device)
         self.device = device
@@ -217,7 +220,7 @@ class StateModeling:
         self.batch_size = batch_size
         self.agent = agent
         self.state = self.env.reset()
-        self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([20.0]).to(self.device))
+        self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([positive_weight]).to(self.device))
         self.optimizer = torch.optim.Adam(self.net.parameters(), lr=1e-3)
 
     def train(self):
@@ -347,7 +350,7 @@ if __name__ == "__main__":
     input_shape = (obs_shape[2], obs_shape[0], obs_shape[1])  # (C, H, W)
     random_agent = RandomAgent(env)
     model = StatePredictionNet(input_shape=input_shape)
-    state_modeling = StateModeling(env=env, net=model, agent=random_agent, device=device)
+    state_modeling = StateModeling(env=env, net=model, agent=random_agent, device=device, positive_weight=args.positive_weight)
 
     log_dir = f"./{args.exp_name}"
     log_path = os.path.join(log_dir, f"{args.exp_name}_training_log.csv")
@@ -364,7 +367,7 @@ if __name__ == "__main__":
     best_f1 = 0.0
     best_epoch = -1
 
-    for epoch in range(1000):
+    for epoch in range(args.num_epochs):
         avg_loss = state_modeling.train()
 
         if epoch % 100 == 0:
@@ -374,7 +377,7 @@ if __name__ == "__main__":
             recall = num_correctUnits / (num_units + 1e-8)
             f1 = 2 * (precision * recall) / (precision + recall + 1e-8)
 
-            print(f"[Eval] Epoch {epoch} | Units: {num_units} | Pred: {num_predUnits} | Correct: {num_correctUnits}")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [Eval] Epoch {epoch} | Units: {num_units} | Pred: {num_predUnits} | Correct: {num_correctUnits}")
             print(f"[Eval] Precision: {precision:.4f} | Recall: {recall:.4f} | F1: {f1:.4f}")
 
             if f1 > best_f1:
