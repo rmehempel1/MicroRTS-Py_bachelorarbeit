@@ -199,7 +199,7 @@ class StatePredictionNet(nn.Module):
         z = self.bottleneck(z)
         out = self.decoder(z)
 
-        print("Predicted max:", out.max().item(), "min:", out.min().item())
+        #print("Predicted max:", out.max().item(), "min:", out.min().item())
         return out
 
 import torch
@@ -297,14 +297,19 @@ class RandomAgent:
         return actions, None
 
     def play_step(self, epsilon=0.0):
-        _= self.env.venv.venv.get_action_mask()
-        actions = self.env.action_space.sample()
+        base_env = self.env.venv.venv
+        num_envs = base_env.num_envs
+        _=self.env.venv.venv.get_action_mask()
+        # Liste für alle Envs
+        actions = np.array([
+            base_env.action_space.sample()  # Shape: (64, 7)
+            for _ in range(num_envs)
+        ], dtype=np.int32)  # Shape: (24, 64, 7)
+
         next_obs, rewards, dones, infos = self.env.step(actions)
         self.last_obs = next_obs
         return next_obs, rewards, dones, infos
 
-    def get_env(self):
-        return self.env
 if __name__ == "__main__":
 
     args = parse_args()
@@ -317,15 +322,15 @@ if __name__ == "__main__":
     reward_weights = np.array([50.0, 3.0, 3.0, 0.0, 5.0, 1.0])
     env = MicroRTSGridModeVecEnv(
         num_selfplay_envs=args.num_selfplay_envs,
-        num_bot_envs=args.num_bot_envs,
+        num_bot_envs=24,
         partial_obs=args.partial_obs,
         max_steps=args.max_steps,
         render_theme=2,
         ai2s=(
-
-            [microrts_ai.workerRushAI for _ in range(num_each)] +
-            [microrts_ai.lightRushAI for _ in range(num_each)] +
-            [microrts_ai.coacAI for _ in range(num_envs - 3 * num_each)]
+            [microrts_ai.passiveAI for _ in range(6)]+
+            [microrts_ai.workerRushAI for _ in range(6)] +
+            [microrts_ai.lightRushAI for _ in range(6)] +
+            [microrts_ai.coacAI for _ in range(6)]
         ),
         map_paths=[args.train_maps[0]],
         reward_weight=reward_weights,
@@ -344,12 +349,17 @@ if __name__ == "__main__":
     model = StatePredictionNet(input_shape=input_shape)
     state_modeling = StateModeling(env=env, net=model, agent=random_agent, device=device)
 
-    log_path = f"./{args.exp_name}/{args.exp_name}_training_log.csv"
+    log_dir = f"./{args.exp_name}"
+    log_path = os.path.join(log_dir, f"{args.exp_name}_training_log.csv")
+    os.makedirs(log_dir, exist_ok=True)
+
+    # Log-Datei anlegen, falls nicht vorhanden
     if not os.path.exists(log_path):
         with open(log_path, mode='w', newline='') as file:
             writer = csv.writer(file)
             writer.writerow(
-                ["epoch", "avg_loss", "num_units", "num_pred_units", "num_correct_units", "precision", "recall", "f1"])
+                ["epoch", "avg_loss", "num_units", "num_pred_units", "num_correct_units", "precision", "recall", "f1"]
+            )
 
     best_f1 = 0.0
     best_epoch = -1
